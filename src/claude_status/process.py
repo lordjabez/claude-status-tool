@@ -69,15 +69,17 @@ def _is_claude_process(args: str) -> bool:
 
 
 def _extract_resume_arg(args: str) -> str | None:
-    """Extract the --resume argument value if present."""
-    parts = args.split()
-    try:
-        idx = parts.index("--resume")
-        if idx + 1 < len(parts):
-            return parts[idx + 1]
-    except ValueError:
-        pass
-    return None
+    """Extract the --resume argument value if present.
+
+    The resume value can be multi-word (e.g. 'claude --resume Claude Status Tool'),
+    so we capture everything after '--resume '.
+    """
+    marker = " --resume "
+    idx = args.find(marker)
+    if idx == -1:
+        return None
+    value = args[idx + len(marker):].strip()
+    return value if value else None
 
 
 def get_process_cwd(pid: int) -> str | None:

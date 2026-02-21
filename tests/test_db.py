@@ -71,6 +71,35 @@ def test_upsert_session(tmp_path):
     conn.close()
 
 
+def test_upsert_session_null_preserves_existing(tmp_path):
+    """NULL in new data should not overwrite an existing non-NULL value."""
+    conn = _make_db(tmp_path)
+    upsert_session(conn, {
+        "session_id": "abc-123",
+        "slug": "my-slug",
+        "custom_title": "My Title",
+        "cwd": "/some/path",
+        "message_count": 5,
+    })
+    conn.commit()
+
+    # Second upsert omits slug, custom_title, cwd (they'll be None)
+    upsert_session(conn, {
+        "session_id": "abc-123",
+        "message_count": 10,
+        "project_path": "/new/project",
+    })
+    conn.commit()
+
+    row = conn.execute("SELECT * FROM sessions WHERE session_id = 'abc-123'").fetchone()
+    assert row["slug"] == "my-slug"
+    assert row["custom_title"] == "My Title"
+    assert row["cwd"] == "/some/path"
+    assert row["message_count"] == 10
+    assert row["project_path"] == "/new/project"
+    conn.close()
+
+
 def test_upsert_runtime(tmp_path):
     conn = _make_db(tmp_path)
     upsert_session(conn, {"session_id": "abc-123"})

@@ -77,7 +77,11 @@ def _now() -> str:
 
 
 def upsert_session(conn: sqlite3.Connection, data: dict) -> None:
-    """INSERT OR REPLACE a session row."""
+    """Upsert a session row, preserving existing non-NULL values.
+
+    Uses COALESCE so that a NULL in the new data won't overwrite
+    an existing value (e.g. custom_title set by JSONL but absent from the index).
+    """
     data.setdefault("updated_at", _now())
     columns = [
         "session_id", "slug", "custom_title", "project_path", "project_dir",
@@ -87,8 +91,17 @@ def upsert_session(conn: sqlite3.Connection, data: dict) -> None:
     placeholders = ", ".join(["?"] * len(columns))
     col_str = ", ".join(columns)
     values = [data.get(c) for c in columns]
+
+    # On conflict, prefer the new value if non-NULL, else keep the old one.
+    # updated_at always takes the new value.
+    updates = ", ".join(
+        f"{c} = COALESCE(excluded.{c}, sessions.{c})" if c != "updated_at"
+        else f"{c} = excluded.{c}"
+        for c in columns if c != "session_id"
+    )
     conn.execute(
-        f"INSERT OR REPLACE INTO sessions ({col_str}) VALUES ({placeholders})",
+        f"INSERT INTO sessions ({col_str}) VALUES ({placeholders}) "
+        f"ON CONFLICT(session_id) DO UPDATE SET {updates}",
         values,
     )
 

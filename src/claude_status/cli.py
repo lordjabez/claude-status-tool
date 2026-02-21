@@ -100,6 +100,12 @@ def cmd_list(args: argparse.Namespace) -> None:
 
     conn.close()
 
+    if args.name:
+        rows = [
+            r for r in rows
+            if args.name in (r["custom_title"] or "") or args.name in (r["slug"] or "")
+        ]
+
     if not rows:
         if args.json:
             print("[]")
@@ -114,7 +120,7 @@ def cmd_list(args: argparse.Namespace) -> None:
 
     # Table output
     print(
-        f"  {'STATE':<8} {'NAME':<24} {'PROJECT':<36} {'TMUX':<8} LAST ACTIVE"
+        f"  {'STATE':<8} {'NAME':<24} {'PROJECT':<36} {'TMUX':<8} {'LAST ACTIVE':<12} SESSION ID"
     )
     for row in rows:
         state = row["state"] or ""
@@ -126,9 +132,10 @@ def cmd_list(args: argparse.Namespace) -> None:
             last_active = human_relative(row["debug_mtime"])
         elif row["modified_at"]:
             last_active = human_relative(row["modified_at"])
+        session_id = row["session_id"]
 
         line = f"  {state:<8} {truncate(name, 24):<24} "
-        line += f"{truncate(project, 36):<36} {tmux:<8} {last_active}"
+        line += f"{truncate(project, 36):<36} {tmux:<8} {last_active:<12} {session_id}"
         print(line)
 
     print(f"\n  {len(rows)} session(s)")
@@ -231,6 +238,7 @@ def main() -> None:
         "--all", "-a", action="store_true", help="Show all sessions, not just active",
     )
     p_list.add_argument("--project", "-p", help="Filter by project path (substring)")
+    p_list.add_argument("--name", "-n", help="Filter by name (substring match on title/slug)")
     p_list.add_argument(
         "--state", "-s", choices=["active", "idle", "inactive"], help="Filter by state",
     )
@@ -273,6 +281,7 @@ def main() -> None:
         # Default: list active sessions
         args.all = False
         args.project = None
+        args.name = None
         args.state = None
         args.json = False
         cmd_list(args)

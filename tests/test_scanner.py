@@ -1,8 +1,16 @@
 """Tests for claude_status.scanner module."""
 
 import json
+from pathlib import Path
 
-from claude_status.scanner import _looks_like_uuid, _parse_jsonl, _truncate, folder_label
+from claude_status.db import get_connection, init_schema, upsert_session
+from claude_status.scanner import (
+    _looks_like_uuid,
+    _parse_jsonl,
+    _propagate_titles,
+    _truncate,
+    folder_label,
+)
 
 
 def test_folder_label_basic():
@@ -104,3 +112,52 @@ def test_parse_jsonl_skips_interrupted_requests(tmp_path):
     result = _parse_jsonl(jsonl_file)
     assert result is not None
     assert result["first_user_text"] == "Real prompt"
+
+
+def _make_db(tmp_path: Path):
+    conn = get_connection(tmp_path / "test.db")
+    init_schema(conn)
+    return conn
+
+
+def test_propagate_titles(tmp_path):
+    """Continued sessions with the same slug should inherit custom_title."""
+    conn = _make_db(tmp_path)
+
+    # Original session: has slug and custom_title
+    upsert_session(conn, {
+        "session_id": "original-1111",
+        "slug": "my-cool-slug",
+        "custom_title": "My Project",
+        "modified_at": "2026-01-01T00:00:00Z",
+    })
+
+    # Continuation session: same slug, no custom_title
+    upsert_session(conn, {
+        "session_id": "continuation-2222",
+        "slug": "my-cool-slug",
+        "modified_at": "2026-01-02T00:00:00Z",
+    })
+
+    # Unrelated session: different slug, no title (should not be affected)
+    upsert_session(conn, {
+        "session_id": "unrelated-3333",
+        "slug": "other-slug",
+        "modified_at": "2026-01-01T00:00:00Z",
+    })
+
+    conn.commit()
+    _propagate_titles(conn)
+    conn.commit()
+
+    row = conn.execute(
+        "SELECT custom_title FROM sessions WHERE session_id = 'continuation-2222'"
+    ).fetchone()
+    assert row["custom_title"] == "My Project"
+
+    row = conn.execute(
+        "SELECT custom_title FROM sessions WHERE session_id = 'unrelated-3333'"
+    ).fetchone()
+    assert row["custom_title"] is None
+
+    conn.close()

@@ -21,9 +21,11 @@ def test_is_claude_process_excludes():
 
 def test_extract_resume_arg():
     assert _extract_resume_arg("claude --resume abc-123") == "abc-123"
-    assert _extract_resume_arg("claude --resume my-session --verbose") == "my-session"
     assert _extract_resume_arg("claude") is None
     assert _extract_resume_arg("/usr/bin/claude --resume test") == "test"
+    # Multi-word resume values (custom titles with spaces)
+    assert _extract_resume_arg("claude --resume Claude Status Tool") == "Claude Status Tool"
+    assert _extract_resume_arg("claude --resume My Project") == "My Project"
 
 
 def test_resolve_tty_device():

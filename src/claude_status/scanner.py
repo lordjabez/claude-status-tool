@@ -59,7 +59,8 @@ def scan_sessions(conn: sqlite3.Connection) -> None:
     """Scan all session sources and upsert into the database.
 
     1. Walk sessions-index.json files for fast metadata
-    2. Fall back to JSONL parsing for sessions not in any index
+    2. JSONL parsing for fields the index lacks (custom_title, slug, cwd)
+    3. Propagate custom_title across sessions that share a slug
     """
     if not PROJECTS_DIR.is_dir():
         return
@@ -69,29 +70,32 @@ def scan_sessions(conn: sqlite3.Connection) -> None:
             continue
 
         project_dir_name = project_dir.name
-        indexed_ids: set[str] = set()
 
-        # Try sessions-index.json first
+        # Index provides fast metadata (message count, timestamps, branch)
         index_file = project_dir / "sessions-index.json"
         if index_file.is_file():
-            indexed_ids = _scan_index_file(conn, index_file, project_dir_name)
+            _scan_index_file(conn, index_file, project_dir_name)
 
-        # Fall back to JSONL for sessions not in index
-        _scan_jsonl_files(conn, project_dir, project_dir_name, indexed_ids)
+        # JSONL provides fields the index lacks (custom_title, slug, cwd).
+        # Runs for all sessions; mtime guard prevents redundant re-parsing.
+        _scan_jsonl_files(conn, project_dir, project_dir_name)
+
+    # When Claude Code continues a session (compaction), the new JSONL gets
+    # the same slug but no custom-title entry. Propagate titles from siblings.
+    _propagate_titles(conn)
 
 
 def _scan_index_file(
     conn: sqlite3.Connection,
     index_file: Path,
     project_dir_name: str,
-) -> set[str]:
-    """Parse a sessions-index.json and upsert sessions. Returns set of session IDs found."""
-    indexed_ids: set[str] = set()
+) -> None:
+    """Parse a sessions-index.json and upsert sessions."""
     try:
         with open(index_file) as f:
             data = json.load(f)
     except (json.JSONDecodeError, OSError):
-        return indexed_ids
+        return
 
     entries = data.get("entries", [])
     original_path = data.get("originalPath")
@@ -102,13 +106,11 @@ def _scan_index_file(
         if not session_id:
             continue
 
-        indexed_ids.add(session_id)
         jsonl_path = entry.get("fullPath")
-        jsonl_mtime = entry.get("fileMtime")
-        if jsonl_mtime:
-            # Convert ms to seconds
-            jsonl_mtime = jsonl_mtime / 1000.0
 
+        # Don't set jsonl_mtime here — the index doesn't have slug/custom_title/cwd,
+        # so we need JSONL parsing to fill those in. Setting mtime from the index
+        # would cause the mtime guard in _scan_jsonl_files to skip the JSONL file.
         upsert_session(conn, {
             "session_id": session_id,
             "first_prompt": _truncate(entry.get("firstPrompt"), 200),
@@ -118,27 +120,21 @@ def _scan_index_file(
             "project_path": project_path,
             "project_dir": project_dir_name,
             "jsonl_path": jsonl_path,
-            "jsonl_mtime": jsonl_mtime,
             "created_at": entry.get("created"),
             "modified_at": entry.get("modified"),
         })
-
-    return indexed_ids
 
 
 def _scan_jsonl_files(
     conn: sqlite3.Connection,
     project_dir: Path,
     project_dir_name: str,
-    skip_ids: set[str],
 ) -> None:
-    """Parse JSONL files not covered by the index."""
+    """Parse JSONL files for fields the index doesn't provide (slug, custom_title, cwd)."""
     project_path = folder_label(project_dir_name)
 
     for jsonl_file in project_dir.glob("*.jsonl"):
         session_id = jsonl_file.stem
-        if session_id in skip_ids:
-            continue
 
         # Check mtime to avoid re-parsing unchanged files
         try:
@@ -173,6 +169,32 @@ def _scan_jsonl_files(
             "created_at": session_data.get("first_ts"),
             "modified_at": session_data.get("last_ts"),
         })
+
+
+def _propagate_titles(conn: sqlite3.Connection) -> None:
+    """Copy custom_title to sessions that share a slug but lack a title.
+
+    This handles session continuations (compaction) where Claude Code reuses
+    the slug but doesn't copy the custom-title entry to the new JSONL.
+    """
+    conn.execute("""
+        UPDATE sessions
+        SET custom_title = (
+            SELECT s2.custom_title
+            FROM sessions s2
+            WHERE s2.slug = sessions.slug
+              AND s2.custom_title IS NOT NULL
+            ORDER BY s2.modified_at DESC
+            LIMIT 1
+        )
+        WHERE custom_title IS NULL
+          AND slug IS NOT NULL
+          AND EXISTS (
+            SELECT 1 FROM sessions s2
+            WHERE s2.slug = sessions.slug
+              AND s2.custom_title IS NOT NULL
+          )
+    """)
 
 
 def _parse_jsonl(filepath: Path) -> dict | None:
