@@ -132,6 +132,32 @@ def get_tmux_pane_map() -> dict[str, dict[str, str]]:
     return pane_map
 
 
+def get_tmux_client_map() -> dict[str, str]:
+    """Map tmux session names to the TTY of the attached client terminal.
+
+    Returns {"session_name": "/dev/ttysNNN"}.
+    If multiple clients are attached to one session, the last one wins.
+    """
+    try:
+        result = subprocess.run(
+            ["tmux", "list-clients", "-F", "#{client_tty} #{session_name}"],
+            capture_output=True, text=True, timeout=5,
+        )
+    except (subprocess.SubprocessError, FileNotFoundError):
+        return {}
+
+    if result.returncode != 0:
+        return {}
+
+    client_map: dict[str, str] = {}
+    for line in result.stdout.splitlines():
+        parts = line.strip().split(None, 1)
+        if len(parts) == 2:
+            client_map[parts[1]] = parts[0]
+
+    return client_map
+
+
 def get_debug_log_mtime(session_id: str) -> float | None:
     """Get the mtime of a session's debug log file."""
     debug_file = DEBUG_DIR / f"{session_id}.txt"

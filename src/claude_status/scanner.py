@@ -12,6 +12,7 @@ from claude_status.process import (
     get_claude_processes,
     get_debug_log_mtime,
     get_process_cwd,
+    get_tmux_client_map,
     get_tmux_pane_map,
     resolve_tty_device,
 )
@@ -281,6 +282,7 @@ def scan_runtime(conn: sqlite3.Connection) -> set[str]:
         return set()
 
     tmux_map = get_tmux_pane_map()
+    client_map = get_tmux_client_map()
     active_session_ids: set[str] = set()
 
     for proc in processes:
@@ -293,6 +295,12 @@ def scan_runtime(conn: sqlite3.Connection) -> set[str]:
         tty = proc["tty"]
         tty_device = resolve_tty_device(tty)
         tmux_info = tmux_map.get(tty_device, {})
+
+        # If running in tmux, use the client terminal's TTY instead of the pane PTY
+        if tmux_info:
+            client_tty = client_map.get(tmux_info.get("session", ""))
+            if client_tty:
+                tty = client_tty.removeprefix("/dev/")
 
         state = detect_state(session_id)
         debug_mtime = get_debug_log_mtime(session_id)
