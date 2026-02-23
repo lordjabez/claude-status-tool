@@ -40,7 +40,7 @@ uv tool uninstall claude-status
 
 ### Daemon
 
-The daemon polls every 3 seconds by default, scanning session files, detecting running processes, mapping tmux panes, and updating the database.
+The daemon polls every 10 seconds by default, scanning session files, detecting running processes, mapping tmux panes, and updating the database. With hooks enabled, state transitions are near-instant and the daemon serves as a backup for metadata enrichment.
 
 ```bash
 claude-status daemon start              # start in background
@@ -52,6 +52,61 @@ claude-status daemon poll               # run a single poll iteration (no daemon
 ```
 
 The daemon writes a PID file to `~/.claude/claude-status-daemon.pid`.
+
+### Hook integration
+
+Claude Code [hooks](https://docs.anthropic.com/en/docs/claude-code/hooks) can push state transitions to the database instantly, eliminating the up-to-10-second polling delay. The daemon still handles full metadata discovery (pid, tmux, session catalog); hooks just make state changes (`working`, `idle`, `waiting`) appear immediately.
+
+Add the following to `~/.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "matcher": {},
+        "hooks": [{ "type": "command", "command": "claude-status notify", "async": true }]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": {},
+        "hooks": [{ "type": "command", "command": "claude-status notify", "async": true }]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": {},
+        "hooks": [{ "type": "command", "command": "claude-status notify", "async": true }]
+      }
+    ],
+    "Notification": [
+      {
+        "matcher": {},
+        "hooks": [{ "type": "command", "command": "claude-status notify", "async": true }]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "matcher": {},
+        "hooks": [{ "type": "command", "command": "claude-status notify", "async": true }]
+      }
+    ]
+  }
+}
+```
+
+Event mapping:
+
+| Hook Event         | DB Action                              |
+| ---------------    | -------------------------------------- |
+| `UserPromptSubmit` | state = "working"                      |
+| `PostToolUse`      | state = "working", update last_activity|
+| `Stop`             | state = "idle"                         |
+| `Notification`     | state = "waiting" (permission prompts) |
+| `SessionEnd`       | delete runtime row                     |
+
+All hooks use `"async": true` so they never block Claude. The `notify` command reads JSON from stdin, updates the database, and exits silently on any error.
 
 ### Listing sessions
 

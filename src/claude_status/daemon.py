@@ -1,23 +1,28 @@
 """Background daemon that polls session state and updates the database."""
 
+import json
 import os
 import signal
+import sqlite3
 import sys
 import time
 from pathlib import Path
 
 from claude_status.db import (
+    delete_runtime,
     get_connection,
     get_db_path,
     get_meta,
     init_schema,
     remove_stale_runtime,
     update_meta,
+    upsert_runtime_state,
+    upsert_session,
 )
 from claude_status.scanner import scan_runtime, scan_sessions
 
 PID_FILE = Path.home() / ".claude" / "claude-status-daemon.pid"
-DEFAULT_INTERVAL = 3
+DEFAULT_INTERVAL = 10
 
 
 def poll_once(db_path: Path | None = None) -> None:
@@ -168,3 +173,53 @@ def stop_daemon() -> bool:
     except OSError:
         pass
     return True
+
+
+def _process_hook_event(conn: sqlite3.Connection, payload: dict) -> None:
+    """Dispatch a hook event to the appropriate DB update."""
+    event = payload.get("hook_event_name", "")
+    session_id = payload.get("session_id")
+    if not session_id:
+        return
+
+    if event in ("UserPromptSubmit", "PostToolUse"):
+        # Ensure a minimal session row exists to satisfy the FK constraint.
+        upsert_session(conn, {"session_id": session_id, "cwd": payload.get("cwd")})
+        upsert_runtime_state(conn, session_id, "working", time.time())
+
+    elif event == "Stop":
+        try:
+            upsert_runtime_state(conn, session_id, "idle")
+        except sqlite3.IntegrityError:
+            pass  # Session row doesn't exist yet; nothing to update.
+
+    elif event == "Notification":
+        if payload.get("notification_type") == "permission_prompt":
+            try:
+                upsert_runtime_state(conn, session_id, "waiting")
+            except sqlite3.IntegrityError:
+                pass
+
+    elif event == "SessionEnd":
+        delete_runtime(conn, session_id)
+
+
+def handle_notify() -> None:
+    """Entry point for the ``claude-status notify`` CLI command.
+
+    Reads a JSON object from stdin, opens the DB, dispatches the event, and
+    exits.  Wraps everything in a blanket try/except so a failure here never
+    blocks Claude Code (hooks run with ``"async": true``).
+    """
+    try:
+        raw = sys.stdin.read()
+        payload = json.loads(raw)
+        conn = get_connection()
+        try:
+            init_schema(conn)
+            _process_hook_event(conn, payload)
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        pass  # Never break Claude.

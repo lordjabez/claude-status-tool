@@ -20,8 +20,8 @@ src/claude_status/
   db.py        # SQLite schema, connection (WAL), upsert/query helpers
   process.py   # ps parsing, lsof CWD lookup, tmux mapping, JSONL-based state detection
   scanner.py   # Session catalog scan (index + JSONL fallback), session ID resolution, state detection
-  daemon.py    # Poll loop, fork/daemonize, PID file, signal handling
-  cli.py       # argparse CLI: list, show, daemon {start,stop,status,poll}, db
+  daemon.py    # Poll loop, fork/daemonize, PID file, signal handling, hook notify handler
+  cli.py       # argparse CLI: list, show, daemon {start,stop,status,poll}, notify, db
 ```
 
 Dependency flow: `cli -> daemon -> scanner -> db, process`

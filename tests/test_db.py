@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from claude_status.db import (
+    delete_runtime,
     get_active_sessions,
     get_all_sessions,
     get_connection,
@@ -15,6 +16,7 @@ from claude_status.db import (
     remove_stale_runtime,
     update_meta,
     upsert_runtime,
+    upsert_runtime_state,
     upsert_session,
 )
 
@@ -266,4 +268,95 @@ def test_negative_message_count_rejected(tmp_path):
             "INSERT INTO sessions (session_id, message_count, updated_at) VALUES (?, ?, ?)",
             ("s1", -1, "2026-01-01T00:00:00"),
         )
+    conn.close()
+
+
+def test_upsert_runtime_state_insert(tmp_path):
+    """upsert_runtime_state creates a new runtime row if none exists."""
+    conn = _make_db(tmp_path)
+    upsert_session(conn, {"session_id": "s1"})
+    conn.commit()
+
+    upsert_runtime_state(conn, "s1", "working", 1234567890.0)
+    conn.commit()
+
+    row = conn.execute("SELECT * FROM runtime WHERE session_id = 's1'").fetchone()
+    assert row["state"] == "working"
+    assert row["last_activity"] == 1234567890.0
+    conn.close()
+
+
+def test_upsert_runtime_state_preserves_fields(tmp_path):
+    """upsert_runtime_state should not wipe pid/tty/tmux already set by the daemon."""
+    conn = _make_db(tmp_path)
+    upsert_session(conn, {"session_id": "s1"})
+    upsert_runtime(conn, {
+        "session_id": "s1",
+        "pid": 42,
+        "tty": "ttys001",
+        "tmux_target": "main:0.0",
+        "state": "idle",
+        "last_activity": 100.0,
+    })
+    conn.commit()
+
+    upsert_runtime_state(conn, "s1", "working", 200.0)
+    conn.commit()
+
+    row = conn.execute("SELECT * FROM runtime WHERE session_id = 's1'").fetchone()
+    assert row["state"] == "working"
+    assert row["last_activity"] == 200.0
+    assert row["pid"] == 42
+    assert row["tty"] == "ttys001"
+    assert row["tmux_target"] == "main:0.0"
+    conn.close()
+
+
+def test_upsert_runtime_state_null_activity_preserves_existing(tmp_path):
+    """Passing last_activity=None should keep the existing value via COALESCE."""
+    conn = _make_db(tmp_path)
+    upsert_session(conn, {"session_id": "s1"})
+    upsert_runtime(conn, {
+        "session_id": "s1",
+        "state": "working",
+        "last_activity": 500.0,
+    })
+    conn.commit()
+
+    upsert_runtime_state(conn, "s1", "idle")
+    conn.commit()
+
+    row = conn.execute("SELECT * FROM runtime WHERE session_id = 's1'").fetchone()
+    assert row["state"] == "idle"
+    assert row["last_activity"] == 500.0
+    conn.close()
+
+
+def test_upsert_runtime_state_fk_violation(tmp_path):
+    """upsert_runtime_state should raise IntegrityError for nonexistent session."""
+    conn = _make_db(tmp_path)
+    with pytest.raises(sqlite3.IntegrityError):
+        upsert_runtime_state(conn, "nonexistent", "working")
+    conn.close()
+
+
+def test_delete_runtime(tmp_path):
+    conn = _make_db(tmp_path)
+    upsert_session(conn, {"session_id": "s1"})
+    upsert_runtime(conn, {"session_id": "s1", "state": "idle"})
+    conn.commit()
+
+    delete_runtime(conn, "s1")
+    conn.commit()
+
+    row = conn.execute("SELECT * FROM runtime WHERE session_id = 's1'").fetchone()
+    assert row is None
+    conn.close()
+
+
+def test_delete_runtime_nonexistent(tmp_path):
+    """Deleting a runtime row that doesn't exist should not raise."""
+    conn = _make_db(tmp_path)
+    delete_runtime(conn, "nonexistent")  # Should not raise
+    conn.commit()
     conn.close()

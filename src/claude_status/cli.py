@@ -10,6 +10,7 @@ from datetime import datetime
 from claude_status.daemon import (
     DEFAULT_INTERVAL,
     get_daemon_status,
+    handle_notify,
     poll_once,
     start_daemon,
     stop_daemon,
@@ -220,6 +221,11 @@ def cmd_daemon(args: argparse.Namespace) -> None:
         print("Poll complete")
 
 
+def cmd_notify(_args: argparse.Namespace) -> None:
+    """Handle the notify subcommand (hook integration)."""
+    handle_notify()
+
+
 def cmd_db(args: argparse.Namespace) -> None:
     """Print the database path."""
     print(get_db_path())
@@ -271,6 +277,10 @@ def main() -> None:
     daemon_sub.add_parser("stop", help="Stop the daemon")
     daemon_sub.add_parser("status", help="Check daemon status")
     daemon_sub.add_parser("poll", help="Run a single poll iteration")
+
+    # notify
+    p_notify = subparsers.add_parser("notify", help="Process a hook event from stdin")
+    p_notify.set_defaults(func=cmd_notify)
 
     # db
     p_db = subparsers.add_parser("db", help="Print the database path")

@@ -124,6 +124,30 @@ def upsert_runtime(conn: sqlite3.Connection, data: dict) -> None:
     )
 
 
+def upsert_runtime_state(
+    conn: sqlite3.Connection,
+    session_id: str,
+    state: str,
+    last_activity: float | None = None,
+) -> None:
+    """Update only state and last_activity, preserving daemon-set fields like pid/tty/tmux."""
+    now = _now()
+    conn.execute(
+        """INSERT INTO runtime (session_id, state, last_activity, updated_at)
+           VALUES (?, ?, ?, ?)
+           ON CONFLICT(session_id) DO UPDATE SET
+               state = excluded.state,
+               last_activity = COALESCE(excluded.last_activity, runtime.last_activity),
+               updated_at = excluded.updated_at""",
+        (session_id, state, last_activity, now),
+    )
+
+
+def delete_runtime(conn: sqlite3.Connection, session_id: str) -> None:
+    """Delete a single runtime row."""
+    conn.execute("DELETE FROM runtime WHERE session_id = ?", (session_id,))
+
+
 def remove_stale_runtime(conn: sqlite3.Connection, active_session_ids: set[str]) -> None:
     """Delete runtime rows for sessions no longer running."""
     if not active_session_ids:
