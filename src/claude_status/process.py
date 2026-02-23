@@ -198,16 +198,12 @@ def _read_last_jsonl_entry(path: Path) -> dict | None:
     Reads from the tail of the file to avoid loading the entire file.
     """
     try:
-        size = path.stat().st_size
-        if size == 0:
-            return None
-    except OSError:
-        return None
-
-    read_size = min(size, 256 * 1024)
-    try:
         with open(path, "rb") as f:
-            f.seek(max(0, size - read_size))
+            f.seek(0, 2)  # seek to end
+            size = f.tell()
+            if size == 0:
+                return None
+            f.seek(max(0, size - 256 * 1024))
             data = f.read().decode("utf-8", errors="replace")
     except OSError:
         return None
@@ -229,8 +225,6 @@ def resolve_tty_device(tty: str) -> str:
 
     ps shows TTYs like 'ttys001' but tmux uses '/dev/ttys001'.
     """
-    if tty.startswith("/dev/"):
-        return tty
-    if tty == "??" or tty == "?":
+    if tty.startswith("/dev/") or tty in ("??", "?"):
         return tty
     return f"/dev/{tty}"

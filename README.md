@@ -6,7 +6,7 @@ Real-time status tracking for Claude Code sessions. A background daemon keeps a 
 
 ```text
 ~/.claude/projects/*/     ──┐
-~/.claude/debug/*.txt     ──┤
+*.jsonl (conversation)    ──┤
 ps (claude processes)     ──┼──▶  daemon (polls every 3s)  ──▶  ~/.claude/claude-status.db
 tmux list-panes           ──┘                                         │
                                                                       ▼
@@ -59,7 +59,8 @@ The daemon writes a PID file to `~/.claude/claude-status-daemon.pid`.
 claude-status                           # list active (running) sessions
 claude-status list --all                # list all sessions
 claude-status list --project foo        # filter by project path substring
-claude-status list --state active       # filter: active, idle, or inactive
+claude-status list --name foo           # filter by name (case-sensitive substring)
+claude-status list --state working      # filter: working, idle, waiting, or inactive
 claude-status list --all --json         # JSON output
 ```
 
@@ -67,7 +68,7 @@ Example output:
 
 ```text
   STATE    NAME                     PROJECT                              TMUX     LAST ACTIVE
-  active   Chief of Staff Plan      ~/Projects/jud/chief-of-staff        0:0.0    2s ago
+  working  Chief of Staff Plan      ~/Projects/jud/chief-of-staff        0:0.0    2s ago
   idle     Data System              ~/Projects/jud/data-system           5:0.0    3m ago
 ```
 
@@ -91,7 +92,7 @@ Override with the `CLAUDE_STATUS_DB` environment variable.
 The database is a standard SQLite file. Any tool that reads SQLite can query it:
 
 ```bash
-sqlite3 ~/.claude/claude-status.db "SELECT * FROM runtime WHERE state = 'active'"
+sqlite3 ~/.claude/claude-status.db "SELECT * FROM runtime WHERE state = 'working'"
 ```
 
 ### Schema
@@ -108,7 +109,7 @@ sqlite3 ~/.claude/claude-status.db "SELECT * FROM runtime WHERE state = 'active'
 | cwd           | TEXT    | Working directory at session start    |
 | git_branch    | TEXT    | Branch name                           |
 | first_prompt  | TEXT    | First user message (truncated)        |
-| message_count | INTEGER | Number of assistant messages          |
+| message_count | INTEGER | Number of assistant messages (>= 0)   |
 | is_sidechain  | INTEGER | Whether this is a sidechain session   |
 | jsonl_path    | TEXT    | Path to the JSONL transcript          |
 | jsonl_mtime   | REAL    | Last modification time of JSONL file  |
@@ -118,17 +119,17 @@ sqlite3 ~/.claude/claude-status.db "SELECT * FROM runtime WHERE state = 'active'
 
 **runtime** - state of currently running sessions:
 
-| Column       | Type    | Description                    |
-| ------------ | ------- | ------------------------------ |
-| session_id   | TEXT PK | FK to sessions                 |
-| pid          | INTEGER | OS process ID                  |
-| tty          | TEXT    | TTY device                     |
-| tmux_target  | TEXT    | tmux pane (e.g. "0:0.0")       |
-| tmux_session | TEXT    | tmux session name              |
-| resume_arg   | TEXT    | Value of --resume if used      |
-| state        | TEXT    | "active" or "idle"             |
-| debug_mtime  | REAL    | Last debug log write (epoch)   |
-| updated_at   | TEXT    | Last DB update                 |
+| Column         | Type    | Description                         |
+| -------------- | ------- | ----------------------------------- |
+| session_id     | TEXT PK | FK to sessions (enforced)           |
+| pid            | INTEGER | OS process ID                       |
+| tty            | TEXT    | TTY device                          |
+| tmux_target    | TEXT    | tmux pane (e.g. "0:0.0")            |
+| tmux_session   | TEXT    | tmux session name                   |
+| resume_arg     | TEXT    | Value of --resume if used           |
+| state          | TEXT    | working, idle, or waiting (checked) |
+| last_activity  | REAL    | Last JSONL write (epoch)            |
+| updated_at     | TEXT    | Last DB update                      |
 
 **meta** - daemon metadata (e.g. `last_poll` timestamp).
 

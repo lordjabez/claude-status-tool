@@ -128,8 +128,8 @@ def cmd_list(args: argparse.Namespace) -> None:
         project = shorten_path(row["project_path"])
         tmux = row["tmux_target"] or ""
         last_active = ""
-        if row["debug_mtime"]:
-            last_active = human_relative(row["debug_mtime"])
+        if row["last_activity"]:
+            last_active = human_relative(row["last_activity"])
         elif row["modified_at"]:
             last_active = human_relative(row["modified_at"])
         session_id = row["session_id"]
@@ -191,8 +191,8 @@ def cmd_show(args: argparse.Namespace) -> None:
             print(f"  Tmux:          {d['tmux_target']}")
         if d.get("resume_arg"):
             print(f"  Resume arg:    {d['resume_arg']}")
-        if d.get("debug_mtime"):
-            print(f"  Last activity: {human_relative(d['debug_mtime'])}")
+        if d.get("last_activity"):
+            print(f"  Last activity: {human_relative(d['last_activity'])}")
 
 
 def cmd_daemon(args: argparse.Namespace) -> None:

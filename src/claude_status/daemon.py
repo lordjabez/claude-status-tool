@@ -9,6 +9,7 @@ from pathlib import Path
 from claude_status.db import (
     get_connection,
     get_db_path,
+    get_meta,
     init_schema,
     remove_stale_runtime,
     update_meta,
@@ -59,11 +60,7 @@ def get_daemon_status() -> dict:
         last_poll = None
         try:
             conn = get_connection()
-            last_poll = conn.execute(
-                "SELECT value FROM meta WHERE key = 'last_poll'"
-            ).fetchone()
-            if last_poll:
-                last_poll = last_poll["value"]
+            last_poll = get_meta(conn, "last_poll")
             conn.close()
         except Exception:
             pass

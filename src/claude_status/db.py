@@ -24,6 +24,7 @@ def get_connection(path: Path | None = None) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=5000")
+    conn.execute("PRAGMA foreign_keys=ON")
     return conn
 
 
@@ -39,7 +40,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
             cwd            TEXT,
             git_branch     TEXT,
             first_prompt   TEXT,
-            message_count  INTEGER DEFAULT 0,
+            message_count  INTEGER DEFAULT 0 CHECK(message_count >= 0),
             is_sidechain   INTEGER DEFAULT 0,
             jsonl_path     TEXT,
             jsonl_mtime    REAL,
@@ -55,8 +56,8 @@ def init_schema(conn: sqlite3.Connection) -> None:
             tmux_target    TEXT,
             tmux_session   TEXT,
             resume_arg     TEXT,
-            state          TEXT NOT NULL,
-            debug_mtime    REAL,
+            state          TEXT NOT NULL CHECK(state IN ('working', 'idle', 'waiting')),
+            last_activity    REAL,
             updated_at     TEXT NOT NULL
         );
 
@@ -68,6 +69,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_sessions_project_path ON sessions(project_path);
         CREATE INDEX IF NOT EXISTS idx_sessions_modified_at ON sessions(modified_at);
         CREATE INDEX IF NOT EXISTS idx_runtime_state ON runtime(state);
+        CREATE INDEX IF NOT EXISTS idx_sessions_slug ON sessions(slug);
     """)
     conn.commit()
 
@@ -111,7 +113,7 @@ def upsert_runtime(conn: sqlite3.Connection, data: dict) -> None:
     data.setdefault("updated_at", _now())
     columns = [
         "session_id", "pid", "tty", "tmux_target", "tmux_session",
-        "resume_arg", "state", "debug_mtime", "updated_at",
+        "resume_arg", "state", "last_activity", "updated_at",
     ]
     placeholders = ", ".join(["?"] * len(columns))
     col_str = ", ".join(columns)
@@ -151,7 +153,7 @@ def get_meta(conn: sqlite3.Connection, key: str) -> str | None:
 # Common SELECT used by all session query helpers.
 _SESSION_SELECT = """
     SELECT s.*, r.pid, r.tty, r.tmux_target, r.tmux_session,
-           r.resume_arg, r.state, r.debug_mtime
+           r.resume_arg, r.state, r.last_activity
     FROM sessions s
 """
 

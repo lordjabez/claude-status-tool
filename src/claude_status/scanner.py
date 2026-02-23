@@ -317,7 +317,7 @@ def scan_runtime(conn: sqlite3.Connection) -> set[str]:
             "tmux_session": tmux_info.get("session"),
             "resume_arg": proc["resume_arg"],
             "state": state,
-            "debug_mtime": last_activity,
+            "last_activity": last_activity,
         })
 
     return active_session_ids
@@ -334,37 +334,20 @@ def _resolve_session_id(conn: sqlite3.Connection, proc: dict) -> str | None:
     resume_arg = proc.get("resume_arg")
 
     if resume_arg:
-        # Check if it's a UUID (direct session ID)
         if _looks_like_uuid(resume_arg):
-            # Verify it exists in our sessions table
-            row = conn.execute(
-                "SELECT session_id FROM sessions WHERE session_id = ?",
-                (resume_arg,),
-            ).fetchone()
-            if row:
-                return resume_arg
-            # Even if not in DB yet, trust the resume arg
             return resume_arg
 
-        # It's a search string (custom title or slug)
-        row = conn.execute(
-            """SELECT session_id FROM sessions
-               WHERE custom_title = ? OR slug = ?
-               ORDER BY modified_at DESC LIMIT 1""",
-            (resume_arg, resume_arg),
-        ).fetchone()
-        if row:
-            return row["session_id"]
-
-        # Partial match
-        row = conn.execute(
-            """SELECT session_id FROM sessions
-               WHERE custom_title LIKE ? OR slug LIKE ?
-               ORDER BY modified_at DESC LIMIT 1""",
-            (f"%{resume_arg}%", f"%{resume_arg}%"),
-        ).fetchone()
-        if row:
-            return row["session_id"]
+        # It's a search string (custom title or slug) — try exact then partial
+        for pattern in (resume_arg, f"%{resume_arg}%"):
+            op = "=" if pattern == resume_arg else "LIKE"
+            row = conn.execute(
+                f"""SELECT session_id FROM sessions
+                    WHERE custom_title {op} ? OR slug {op} ?
+                    ORDER BY modified_at DESC LIMIT 1""",
+                (pattern, pattern),
+            ).fetchone()
+            if row:
+                return row["session_id"]
 
         return None
 

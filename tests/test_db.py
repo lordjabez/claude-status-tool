@@ -1,6 +1,9 @@
 """Tests for claude_status.db module."""
 
+import sqlite3
 from pathlib import Path
+
+import pytest
 
 from claude_status.db import (
     get_active_sessions,
@@ -228,4 +231,39 @@ def test_get_session_partial_id(tmp_path):
     # No match
     row = get_session(conn, "zzz")
     assert row is None
+    conn.close()
+
+
+def test_foreign_key_enforcement(tmp_path):
+    """Runtime insert with a nonexistent session_id should fail."""
+    conn = _make_db(tmp_path)
+    with pytest.raises(sqlite3.IntegrityError):
+        upsert_runtime(conn, {
+            "session_id": "nonexistent-session",
+            "state": "idle",
+        })
+    conn.close()
+
+
+def test_invalid_state_rejected(tmp_path):
+    """Runtime state must be one of working, idle, waiting."""
+    conn = _make_db(tmp_path)
+    upsert_session(conn, {"session_id": "s1"})
+    conn.commit()
+    with pytest.raises(sqlite3.IntegrityError):
+        upsert_runtime(conn, {
+            "session_id": "s1",
+            "state": "bogus",
+        })
+    conn.close()
+
+
+def test_negative_message_count_rejected(tmp_path):
+    """message_count must be >= 0."""
+    conn = _make_db(tmp_path)
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO sessions (session_id, message_count, updated_at) VALUES (?, ?, ?)",
+            ("s1", -1, "2026-01-01T00:00:00"),
+        )
     conn.close()

@@ -18,7 +18,7 @@ access provide querying.
 ```text
 src/claude_status/
   db.py        # SQLite schema, connection (WAL), upsert/query helpers
-  process.py   # ps parsing, lsof CWD lookup, tmux pane mapping, debug log mtime
+  process.py   # ps parsing, lsof CWD lookup, tmux mapping, JSONL-based state detection
   scanner.py   # Session catalog scan (index + JSONL fallback), session ID resolution, state detection
   daemon.py    # Poll loop, fork/daemonize, PID file, signal handling
   cli.py       # argparse CLI: list, show, daemon {start,stop,status,poll}, db
@@ -58,13 +58,13 @@ The daemon reads from these sources each poll cycle:
 - `~/.claude/projects/*/sessions-index.json` for fast session metadata
 - `~/.claude/projects/*/*.jsonl` as fallback (mtime-guarded to avoid re-parsing)
 - `ps -eo pid,tty,args` + `lsof` for running process detection
-- `tmux list-panes` for TTY-to-pane mapping
-- `~/.claude/debug/{id}.txt` mtime for active/idle state detection
+- `tmux list-panes` + `tmux list-clients` for pane mapping and client TTY resolution
 
 ## Key Design Decisions
 
 - JSONL files are only re-parsed when their mtime changes (stored in `jsonl_mtime` column)
-- State detection: debug log mtime within 5s = "active", otherwise "idle"
+- State detection uses JSONL file mtime (within 10s = "working") and last JSONL entry
+  (assistant with tool_use = "waiting", otherwise "idle")
 - `folder_label()` in `scanner.py` reconstructs filesystem paths from Claude's hyphenated
   directory names by greedy matching against existing paths on disk
 - Session ID resolution for bare `claude` processes (no `--resume`) uses `lsof` to get the

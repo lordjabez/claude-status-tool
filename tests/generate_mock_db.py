@@ -235,7 +235,7 @@ def generate(db_path: Path) -> None:
             "pid": 12001, "tty": "ttys003",
             "tmux_target": "work:0.0", "tmux_session": "work",
             "resume_arg": "a1b2c3d4-1111-4000-8000-000000000001",
-            "state": "working", "debug_mtime": now - 1,
+            "state": "working", "last_activity": now - 1,
         },
         # Active, tmux, resumed by name
         {
@@ -243,7 +243,7 @@ def generate(db_path: Path) -> None:
             "pid": 12002, "tty": "ttys004",
             "tmux_target": "work:1.0", "tmux_session": "work",
             "resume_arg": "quiet-thinking-otter",
-            "state": "working", "debug_mtime": now - 2,
+            "state": "working", "last_activity": now - 2,
         },
         # Idle, tmux, stale debug log
         {
@@ -251,7 +251,7 @@ def generate(db_path: Path) -> None:
             "pid": 12003, "tty": "ttys005",
             "tmux_target": "work:2.0", "tmux_session": "work",
             "resume_arg": "Frontend Dashboard",
-            "state": "idle", "debug_mtime": now - 300,
+            "state": "idle", "last_activity": now - 300,
         },
         # Idle, different tmux session
         {
@@ -259,7 +259,7 @@ def generate(db_path: Path) -> None:
             "pid": 12004, "tty": "ttys010",
             "tmux_target": "personal:0.0", "tmux_session": "personal",
             "resume_arg": "gentle-morning-sparrow",
-            "state": "idle", "debug_mtime": now - 600,
+            "state": "idle", "last_activity": now - 600,
         },
         # Active sidechain, same pane as parent
         {
@@ -267,13 +267,13 @@ def generate(db_path: Path) -> None:
             "pid": 12005, "tty": "ttys003",
             "tmux_target": "work:0.0", "tmux_session": "work",
             "resume_arg": "a1b2c3d4-5555-4000-8000-000000000005",
-            "state": "working", "debug_mtime": now - 3,
+            "state": "working", "last_activity": now - 3,
         },
         # Active, no tmux (bare terminal), no resume arg
         {
             "session_id": "a1b2c3d4-aaaa-4000-8000-000000000010",
             "pid": 12010, "tty": "ttys020",
-            "state": "working", "debug_mtime": now - 1,
+            "state": "working", "last_activity": now - 1,
         },
     ]
 
