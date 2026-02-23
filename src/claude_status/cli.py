@@ -240,7 +240,8 @@ def main() -> None:
     p_list.add_argument("--project", "-p", help="Filter by project path (substring)")
     p_list.add_argument("--name", "-n", help="Filter by name (substring match on title/slug)")
     p_list.add_argument(
-        "--state", "-s", choices=["active", "idle", "inactive"], help="Filter by state",
+        "--state", "-s", choices=["working", "idle", "waiting", "inactive"],
+        help="Filter by state",
     )
     p_list.add_argument("--json", action="store_true", help="JSON output")
     p_list.set_defaults(func=cmd_list)

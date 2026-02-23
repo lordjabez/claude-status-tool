@@ -10,7 +10,6 @@ from claude_status.db import upsert_runtime, upsert_session
 from claude_status.process import (
     detect_state,
     get_claude_processes,
-    get_debug_log_mtime,
     get_process_cwd,
     get_tmux_client_map,
     get_tmux_pane_map,
@@ -302,8 +301,13 @@ def scan_runtime(conn: sqlite3.Connection) -> set[str]:
             if client_tty:
                 tty = client_tty.removeprefix("/dev/")
 
-        state = detect_state(session_id)
-        debug_mtime = get_debug_log_mtime(session_id)
+        # Look up jsonl_path for state detection
+        row = conn.execute(
+            "SELECT jsonl_path FROM sessions WHERE session_id = ?", (session_id,)
+        ).fetchone()
+        jsonl_path = row["jsonl_path"] if row else None
+
+        state, last_activity = detect_state(jsonl_path)
 
         upsert_runtime(conn, {
             "session_id": session_id,
@@ -313,7 +317,7 @@ def scan_runtime(conn: sqlite3.Connection) -> set[str]:
             "tmux_session": tmux_info.get("session"),
             "resume_arg": proc["resume_arg"],
             "state": state,
-            "debug_mtime": debug_mtime,
+            "debug_mtime": last_activity,
         })
 
     return active_session_ids

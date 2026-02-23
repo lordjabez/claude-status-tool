@@ -235,7 +235,7 @@ def generate(db_path: Path) -> None:
             "pid": 12001, "tty": "ttys003",
             "tmux_target": "work:0.0", "tmux_session": "work",
             "resume_arg": "a1b2c3d4-1111-4000-8000-000000000001",
-            "state": "active", "debug_mtime": now - 1,
+            "state": "working", "debug_mtime": now - 1,
         },
         # Active, tmux, resumed by name
         {
@@ -243,7 +243,7 @@ def generate(db_path: Path) -> None:
             "pid": 12002, "tty": "ttys004",
             "tmux_target": "work:1.0", "tmux_session": "work",
             "resume_arg": "quiet-thinking-otter",
-            "state": "active", "debug_mtime": now - 2,
+            "state": "working", "debug_mtime": now - 2,
         },
         # Idle, tmux, stale debug log
         {
@@ -267,13 +267,13 @@ def generate(db_path: Path) -> None:
             "pid": 12005, "tty": "ttys003",
             "tmux_target": "work:0.0", "tmux_session": "work",
             "resume_arg": "a1b2c3d4-5555-4000-8000-000000000005",
-            "state": "active", "debug_mtime": now - 3,
+            "state": "working", "debug_mtime": now - 3,
         },
         # Active, no tmux (bare terminal), no resume arg
         {
             "session_id": "a1b2c3d4-aaaa-4000-8000-000000000010",
             "pid": 12010, "tty": "ttys020",
-            "state": "active", "debug_mtime": now - 1,
+            "state": "working", "debug_mtime": now - 1,
         },
     ]
 
@@ -293,7 +293,7 @@ def generate(db_path: Path) -> None:
     conn = sqlite3.connect(str(db_path))
     total = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
     active = conn.execute(
-        "SELECT COUNT(*) FROM runtime WHERE state = 'active'"
+        "SELECT COUNT(*) FROM runtime WHERE state = 'working'"
     ).fetchone()[0]
     idle = conn.execute(
         "SELECT COUNT(*) FROM runtime WHERE state = 'idle'"
@@ -309,7 +309,7 @@ def generate(db_path: Path) -> None:
 
     print(f"Generated {db_path}")
     print(f"  {total} sessions across {projects} projects")
-    print(f"  {active} active, {idle} idle, {inactive} inactive")
+    print(f"  {active} working, {idle} idle, {inactive} inactive")
     print(f"  {sidechains} sidechain(s)")
 
 

@@ -1,11 +1,10 @@
-"""Process detection, tmux mapping, and debug log checks."""
+"""Process detection, tmux mapping, and state detection."""
 
+import json
 import re
 import subprocess
 import time
 from pathlib import Path
-
-DEBUG_DIR = Path.home() / ".claude" / "debug"
 
 # Patterns to exclude from claude process detection
 _EXCLUDE_PATTERNS = [
@@ -158,27 +157,71 @@ def get_tmux_client_map() -> dict[str, str]:
     return client_map
 
 
-def get_debug_log_mtime(session_id: str) -> float | None:
-    """Get the mtime of a session's debug log file."""
-    debug_file = DEBUG_DIR / f"{session_id}.txt"
+def detect_state(
+    jsonl_path: str | None, activity_threshold: float = 10.0,
+) -> tuple[str, float | None]:
+    """Detect session state from the JSONL conversation file.
+
+    Returns (state, jsonl_mtime) where state is one of:
+    - 'working': JSONL modified within threshold (Claude is processing)
+    - 'waiting': last entry is a tool use request (needs user permission/response)
+    - 'idle': Claude is at the prompt waiting for user input
+    """
+    if jsonl_path is None:
+        return "idle", None
+
+    path = Path(jsonl_path)
     try:
-        return debug_file.stat().st_mtime
+        mtime = path.stat().st_mtime
+    except OSError:
+        return "idle", None
+
+    if time.time() - mtime <= activity_threshold:
+        return "working", mtime
+
+    last_entry = _read_last_jsonl_entry(path)
+    if last_entry and last_entry.get("type") == "assistant":
+        content = last_entry.get("message", {}).get("content", [])
+        has_tool_use = any(
+            isinstance(b, dict) and b.get("type") == "tool_use"
+            for b in content
+        )
+        if has_tool_use:
+            return "waiting", mtime
+
+    return "idle", mtime
+
+
+def _read_last_jsonl_entry(path: Path) -> dict | None:
+    """Read and parse the last entry from a JSONL file.
+
+    Reads from the tail of the file to avoid loading the entire file.
+    """
+    try:
+        size = path.stat().st_size
+        if size == 0:
+            return None
     except OSError:
         return None
 
+    read_size = min(size, 256 * 1024)
+    try:
+        with open(path, "rb") as f:
+            f.seek(max(0, size - read_size))
+            data = f.read().decode("utf-8", errors="replace")
+    except OSError:
+        return None
 
-def detect_state(session_id: str, activity_threshold: float = 5.0) -> str:
-    """Detect whether a running session is active or idle.
+    for line in reversed(data.splitlines()):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            return json.loads(line)
+        except json.JSONDecodeError:
+            continue
 
-    - Debug log mtime within threshold seconds: 'active'
-    - Otherwise: 'idle'
-    """
-    mtime = get_debug_log_mtime(session_id)
-    if mtime is not None:
-        age = time.time() - mtime
-        if age <= activity_threshold:
-            return "active"
-    return "idle"
+    return None
 
 
 def resolve_tty_device(tty: str) -> str:

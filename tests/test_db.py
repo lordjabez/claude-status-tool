@@ -106,14 +106,14 @@ def test_upsert_runtime(tmp_path):
     upsert_runtime(conn, {
         "session_id": "abc-123",
         "pid": 12345,
-        "state": "active",
+        "state": "working",
         "tty": "ttys001",
     })
     conn.commit()
 
     row = conn.execute("SELECT * FROM runtime WHERE session_id = 'abc-123'").fetchone()
     assert row["pid"] == 12345
-    assert row["state"] == "active"
+    assert row["state"] == "working"
     conn.close()
 
 
@@ -165,7 +165,7 @@ def test_get_active_sessions(tmp_path):
     conn = _make_db(tmp_path)
     upsert_session(conn, {"session_id": "s1", "modified_at": "2026-01-01T00:00:00"})
     upsert_session(conn, {"session_id": "s2", "modified_at": "2026-01-02T00:00:00"})
-    upsert_runtime(conn, {"session_id": "s1", "state": "active"})
+    upsert_runtime(conn, {"session_id": "s1", "state": "working"})
     conn.commit()
 
     rows = get_active_sessions(conn)
@@ -186,7 +186,7 @@ def test_get_all_sessions_with_filters(tmp_path):
         "project_path": "/Users/jud/Projects/bar",
         "modified_at": "2026-01-02",
     })
-    upsert_runtime(conn, {"session_id": "s1", "state": "active"})
+    upsert_runtime(conn, {"session_id": "s1", "state": "working"})
     conn.commit()
 
     # All sessions
@@ -199,7 +199,7 @@ def test_get_all_sessions_with_filters(tmp_path):
     assert rows[0]["session_id"] == "s1"
 
     # State filter
-    rows = get_all_sessions(conn, state_filter="active")
+    rows = get_all_sessions(conn, state_filter="working")
     assert len(rows) == 1
 
     rows = get_all_sessions(conn, state_filter="inactive")
