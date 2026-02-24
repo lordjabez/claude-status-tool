@@ -325,6 +325,14 @@ def scan_runtime(conn: sqlite3.Connection, detect_states: bool = True) -> set[st
             ).fetchone()
             jsonl_path = row["jsonl_path"] if row else None
             state, last_activity = detect_state(jsonl_path)
+            # JSONL-based detection can't distinguish "idle at prompt" from
+            # "waiting on elicitation/permission", so preserve hook-set waiting.
+            if state == "idle":
+                rt_row = conn.execute(
+                    "SELECT state FROM runtime WHERE session_id = ?", (session_id,)
+                ).fetchone()
+                if rt_row and rt_row["state"] == "waiting":
+                    state = "waiting"
             process_data["state"] = state
             process_data["last_activity"] = last_activity
             upsert_runtime(conn, process_data)
@@ -417,8 +425,16 @@ def _match_pidless_runtime(
             proc, row["session_id"], tmux_map, client_map,
         )
         if detect_states:
-            # No JSONL path available for CWD-matched processes; default to idle.
-            process_data["state"] = "idle"
+            # No JSONL path available for CWD-matched processes; default to idle,
+            # but preserve hook-set "waiting" (same rationale as main loop above).
+            state = "idle"
+            rt_row = conn.execute(
+                "SELECT state FROM runtime WHERE session_id = ?",
+                (row["session_id"],),
+            ).fetchone()
+            if rt_row and rt_row["state"] == "waiting":
+                state = "waiting"
+            process_data["state"] = state
             process_data["last_activity"] = None
             upsert_runtime(conn, process_data)
         else:

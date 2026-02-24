@@ -148,6 +148,23 @@ def test_stop_sets_idle(tmp_path):
     conn.close()
 
 
+def test_stop_preserves_waiting_state(tmp_path):
+    """Stop should not override waiting — user hasn't responded to the prompt yet."""
+    conn = _make_db(tmp_path)
+    upsert_session(conn, {"session_id": "sess-wait-stop"})
+    upsert_runtime(conn, {"session_id": "sess-wait-stop", "state": "waiting"})
+    conn.commit()
+
+    payload = {"hook_event_name": "Stop", "session_id": "sess-wait-stop"}
+    changed = _process_hook_event(conn, payload)
+    conn.commit()
+
+    row = conn.execute("SELECT * FROM runtime WHERE session_id = 'sess-wait-stop'").fetchone()
+    assert row["state"] == "waiting"
+    assert changed is False
+    conn.close()
+
+
 def test_stop_ignores_missing_session(tmp_path):
     """Stop for a session that doesn't exist yet should not raise."""
     conn = _make_db(tmp_path)

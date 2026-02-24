@@ -77,3 +77,7 @@ than 1 second ago (throttled to avoid redundant subprocess calls during rapid to
   hook-set state values
 - After `/clear` or `/compact`, process `--resume` args become stale; `scan_runtime` uses
   a PID map from existing runtime rows and a CWD fallback to match processes correctly
+- "Waiting" state is sticky: once set by a hook (PermissionRequest or
+  Notification/elicitation_dialog/permission_prompt), neither Stop events nor poll-based
+  JSONL detection may overwrite it with "idle". Only an explicit action event
+  (UserPromptSubmit, PreToolUse, PostToolUse, etc.) clears it.

@@ -254,6 +254,34 @@ def test_scan_runtime_matches_pidless_row_after_clear(tmp_path):
     conn.close()
 
 
+def test_scan_runtime_preserves_waiting_state(tmp_path):
+    """Poll-based scan (detect_states=True) should not overwrite hook-set 'waiting'."""
+    conn = _make_db(tmp_path)
+
+    upsert_session(conn, {
+        "session_id": "wait-sess",
+        "jsonl_path": "/nonexistent/file.jsonl",
+        "modified_at": "2026-01-01T00:00:00Z",
+    })
+    upsert_runtime_state(conn, "wait-sess", "waiting")
+    conn.commit()
+
+    mock_processes = [{"pid": 7777, "tty": "ttys001", "resume_arg": None}]
+
+    with patch("claude_status.scanner.get_claude_processes", return_value=mock_processes), \
+         patch("claude_status.scanner.get_tmux_pane_map", return_value={}), \
+         patch("claude_status.scanner.get_tmux_client_map", return_value={}), \
+         patch("claude_status.scanner.get_process_cwd", return_value=None), \
+         patch("claude_status.scanner._resolve_session_id", return_value="wait-sess"), \
+         patch("claude_status.scanner.detect_state", return_value=("idle", None)):
+        scan_runtime(conn, detect_states=True)
+
+    conn.commit()
+    row = conn.execute("SELECT state FROM runtime WHERE session_id = 'wait-sess'").fetchone()
+    assert row["state"] == "waiting"
+    conn.close()
+
+
 def test_scan_runtime_pid_map_prevents_stale_resolution(tmp_path):
     """If a runtime row already maps a PID to a session, scan_runtime should
     trust that mapping over _resolve_session_id (which uses stale --resume args).

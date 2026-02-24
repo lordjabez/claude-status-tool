@@ -91,11 +91,14 @@ def _process_hook_event(conn: sqlite3.Connection, payload: dict) -> bool:
             pass  # Session row doesn't exist yet; nothing to update.
 
     elif event == "Stop":
-        try:
-            upsert_runtime_state(conn, session_id, "idle")
-            changed = prev_state != "idle"
-        except sqlite3.IntegrityError:
-            pass  # Session row doesn't exist yet; nothing to update.
+        # Don't override "waiting" — the user hasn't responded to the
+        # permission/elicitation prompt yet.  PostToolUse will clear it.
+        if prev_state != "waiting":
+            try:
+                upsert_runtime_state(conn, session_id, "idle")
+                changed = prev_state != "idle"
+            except sqlite3.IntegrityError:
+                pass  # Session row doesn't exist yet; nothing to update.
 
     elif event == "Notification":
         ntype = payload.get("notification_type")
