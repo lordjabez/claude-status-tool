@@ -309,6 +309,23 @@ def scan_runtime(conn: sqlite3.Connection) -> set[str]:
 
         state, last_activity = detect_state(jsonl_path)
 
+        # Hooks set state from actual events (authoritative); the daemon infers
+        # state from JSONL mtime (heuristic).  When a hook has already written a
+        # runtime row, preserve its state so the daemon doesn't overwrite it with
+        # a stale inference.  The daemon still updates pid/tty/tmux/resume_arg.
+        existing = conn.execute(
+            "SELECT state FROM runtime WHERE session_id = ?", (session_id,),
+        ).fetchone()
+        if existing:
+            # "working" from mtime is the least reliable inference — never let
+            # it overwrite a more specific hook-set state like "waiting".
+            if state == "working" and existing["state"] == "waiting":
+                state = "waiting"
+            # If the daemon has no jsonl_path it falls back to "idle", but the
+            # hook already knows the real state; keep it.
+            if jsonl_path is None:
+                state = existing["state"]
+
         upsert_runtime(conn, {
             "session_id": session_id,
             "pid": proc["pid"],

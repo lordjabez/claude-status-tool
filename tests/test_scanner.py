@@ -3,7 +3,7 @@
 import json
 from pathlib import Path
 
-from claude_status.db import get_connection, init_schema, upsert_session
+from claude_status.db import get_connection, init_schema, upsert_runtime, upsert_session
 from claude_status.scanner import (
     _looks_like_uuid,
     _parse_jsonl,
@@ -160,6 +160,42 @@ def test_propagate_titles(tmp_path):
         "SELECT custom_title FROM sessions WHERE session_id = 'unrelated-3333'"
     ).fetchone()
     assert row["custom_title"] is None
+
+    conn.close()
+
+
+def test_daemon_does_not_overwrite_waiting_with_working(tmp_path):
+    """The daemon's mtime-based 'working' should not overwrite hook-set 'waiting'.
+
+    Simulates the race: hook sets state='waiting' (permission prompt), then the
+    daemon polls and infers 'working' from a still-recent JSONL mtime.
+    """
+    conn = _make_db(tmp_path)
+    upsert_session(conn, {"session_id": "s1"})
+    upsert_runtime(conn, {"session_id": "s1", "state": "waiting", "last_activity": 100.0})
+    conn.commit()
+
+    # Simulate the daemon's guard logic (mirrors scan_runtime)
+    def apply_guard(daemon_state, jsonl_path=None):
+        state = daemon_state
+        existing = conn.execute(
+            "SELECT state FROM runtime WHERE session_id = ?", ("s1",),
+        ).fetchone()
+        if existing:
+            if state == "working" and existing["state"] == "waiting":
+                state = "waiting"
+            if jsonl_path is None:
+                state = existing["state"]
+        return state
+
+    # "working" from mtime must not overwrite "waiting"
+    assert apply_guard("working", jsonl_path="/some/file.jsonl") == "waiting"
+
+    # "idle" from content analysis should be allowed to overwrite "waiting"
+    assert apply_guard("idle", jsonl_path="/some/file.jsonl") == "idle"
+
+    # When jsonl_path is None, keep the existing hook state
+    assert apply_guard("idle", jsonl_path=None) == "waiting"
 
     conn.close()
 

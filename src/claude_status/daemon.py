@@ -3,9 +3,11 @@
 import json
 import os
 import signal
+import socket
 import sqlite3
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 from claude_status.db import (
@@ -23,18 +25,42 @@ from claude_status.scanner import scan_runtime, scan_sessions
 
 PID_FILE = Path.home() / ".claude" / "claude-status-daemon.pid"
 DEFAULT_INTERVAL = 10
+NOTIFY_PORT = 25283
+
+
+def _notify_udp() -> None:
+    """Send an empty UDP datagram to signal the Logi Options+ plugin to poll."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.sendto(b"", ("127.0.0.1", NOTIFY_PORT))
+    except OSError:
+        pass
 
 
 def poll_once(db_path: Path | None = None) -> None:
     """Execute a single poll iteration."""
+    poll_started = datetime.now(timezone.utc).isoformat()
     conn = get_connection(db_path)
     try:
         init_schema(conn)
         scan_sessions(conn)
         active_ids = scan_runtime(conn)
-        remove_stale_runtime(conn, active_ids)
+
+        # Hooks may have created runtime rows that the daemon can't resolve
+        # back to a ps process (e.g. the session just started).  Keep any
+        # runtime row whose updated_at is >= the start of this poll cycle —
+        # a hook wrote it recently and the next poll will reconcile.
+        hook_ids = {
+            r["session_id"] for r in conn.execute(
+                "SELECT session_id FROM runtime WHERE updated_at >= ?",
+                (poll_started,),
+            ).fetchall()
+        }
+        remove_stale_runtime(conn, active_ids | hook_ids)
+
         update_meta(conn, "last_poll", time.strftime("%Y-%m-%dT%H:%M:%S%z"))
         conn.commit()
+        _notify_udp()
     finally:
         conn.close()
 
@@ -219,6 +245,7 @@ def handle_notify() -> None:
             init_schema(conn)
             _process_hook_event(conn, payload)
             conn.commit()
+            _notify_udp()
         finally:
             conn.close()
     except Exception:
