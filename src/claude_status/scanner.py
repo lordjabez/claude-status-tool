@@ -341,12 +341,25 @@ def _resolve_session_id(conn: sqlite3.Connection, proc: dict) -> str | None:
         for pattern in (resume_arg, f"%{resume_arg}%"):
             op = "=" if pattern == resume_arg else "LIKE"
             row = conn.execute(
-                f"""SELECT session_id FROM sessions
+                f"""SELECT session_id, slug FROM sessions
                     WHERE custom_title {op} ? OR slug {op} ?
                     ORDER BY modified_at DESC LIMIT 1""",
                 (pattern, pattern),
             ).fetchone()
             if row:
+                # A rename changes custom_title but not slug. The process args
+                # still contain the old title, so this match may point at an
+                # older sibling. Prefer the newest session sharing the same slug.
+                slug = row["slug"]
+                if slug:
+                    newest = conn.execute(
+                        """SELECT session_id FROM sessions
+                           WHERE slug = ?
+                           ORDER BY modified_at DESC LIMIT 1""",
+                        (slug,),
+                    ).fetchone()
+                    if newest:
+                        return newest["session_id"]
                 return row["session_id"]
 
         return None

@@ -8,6 +8,7 @@ from claude_status.scanner import (
     _looks_like_uuid,
     _parse_jsonl,
     _propagate_titles,
+    _resolve_session_id,
     _truncate,
     folder_label,
 )
@@ -159,5 +160,38 @@ def test_propagate_titles(tmp_path):
         "SELECT custom_title FROM sessions WHERE session_id = 'unrelated-3333'"
     ).fetchone()
     assert row["custom_title"] is None
+
+    conn.close()
+
+
+def test_resolve_session_id_after_rename(tmp_path):
+    """After /rename, process args contain the old title but the DB has the new one.
+
+    The resolver should follow the slug to find the newest session, not the one
+    whose title still matches the stale process args.
+    """
+    conn = _make_db(tmp_path)
+
+    # Older continuation: still has the old title
+    upsert_session(conn, {
+        "session_id": "old-1111",
+        "slug": "my-slug",
+        "custom_title": "Old Name",
+        "modified_at": "2026-01-01T00:00:00Z",
+    })
+
+    # Current session: renamed, newest modified_at
+    upsert_session(conn, {
+        "session_id": "new-2222",
+        "slug": "my-slug",
+        "custom_title": "New Name",
+        "modified_at": "2026-01-02T00:00:00Z",
+    })
+    conn.commit()
+
+    # Process was started with the old title before the rename happened
+    proc = {"pid": 1234, "tty": "ttys000", "resume_arg": "Old Name"}
+    result = _resolve_session_id(conn, proc)
+    assert result == "new-2222"
 
     conn.close()
