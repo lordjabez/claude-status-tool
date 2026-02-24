@@ -143,6 +143,29 @@ def upsert_runtime_state(
     )
 
 
+def update_runtime_process_info(conn: sqlite3.Connection, data: dict) -> None:
+    """UPDATE-only: set pid/tty/tmux without touching state or last_activity.
+
+    No-ops if the row doesn't exist (the hook creates the row first via
+    upsert_runtime_state).
+    """
+    conn.execute(
+        """UPDATE runtime SET
+               pid = ?, tty = ?, tmux_target = ?, tmux_session = ?,
+               resume_arg = ?, updated_at = ?
+           WHERE session_id = ?""",
+        (
+            data.get("pid"),
+            data.get("tty"),
+            data.get("tmux_target"),
+            data.get("tmux_session"),
+            data.get("resume_arg"),
+            _now(),
+            data["session_id"],
+        ),
+    )
+
+
 def delete_runtime(conn: sqlite3.Connection, session_id: str) -> None:
     """Delete a single runtime row."""
     conn.execute("DELETE FROM runtime WHERE session_id = ?", (session_id,))

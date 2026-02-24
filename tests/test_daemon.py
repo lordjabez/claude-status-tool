@@ -15,15 +15,44 @@ def _make_db(tmp_path: Path):
     return conn
 
 
+def test_session_start_sets_idle(tmp_path):
+    conn = _make_db(tmp_path)
+
+    with patch("claude_status.daemon.scan_sessions"), \
+         patch("claude_status.daemon.scan_runtime", return_value=set()), \
+         patch("claude_status.daemon.remove_stale_runtime"):
+        payload = {
+            "hook_event_name": "SessionStart",
+            "session_id": "sess-start",
+            "cwd": "/tmp/project",
+        }
+        _process_hook_event(conn, payload)
+        conn.commit()
+
+    row = conn.execute("SELECT * FROM runtime WHERE session_id = 'sess-start'").fetchone()
+    assert row is not None
+    assert row["state"] == "idle"
+
+    # Session row should also exist.
+    srow = conn.execute("SELECT * FROM sessions WHERE session_id = 'sess-start'").fetchone()
+    assert srow is not None
+    assert srow["cwd"] == "/tmp/project"
+    conn.close()
+
+
 def test_user_prompt_submit_creates_working_state(tmp_path):
     conn = _make_db(tmp_path)
-    payload = {
-        "hook_event_name": "UserPromptSubmit",
-        "session_id": "sess-1",
-        "cwd": "/tmp/project",
-    }
-    _process_hook_event(conn, payload)
-    conn.commit()
+
+    with patch("claude_status.daemon.scan_sessions"), \
+         patch("claude_status.daemon.scan_runtime", return_value=set()), \
+         patch("claude_status.daemon.remove_stale_runtime"):
+        payload = {
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": "sess-1",
+            "cwd": "/tmp/project",
+        }
+        _process_hook_event(conn, payload)
+        conn.commit()
 
     row = conn.execute("SELECT * FROM runtime WHERE session_id = 'sess-1'").fetchone()
     assert row is not None
@@ -147,7 +176,7 @@ def test_unknown_event_is_noop(tmp_path):
 
 
 def test_working_preserves_daemon_fields(tmp_path):
-    """Hook state update should not wipe pid/tty/tmux set by the daemon."""
+    """Hook state update should not wipe pid/tty/tmux set by process scan."""
     conn = _make_db(tmp_path)
     upsert_session(conn, {"session_id": "sess-8"})
     upsert_runtime(conn, {
@@ -159,9 +188,12 @@ def test_working_preserves_daemon_fields(tmp_path):
     })
     conn.commit()
 
-    payload = {"hook_event_name": "UserPromptSubmit", "session_id": "sess-8"}
-    _process_hook_event(conn, payload)
-    conn.commit()
+    with patch("claude_status.daemon.scan_sessions"), \
+         patch("claude_status.daemon.scan_runtime", return_value=set()), \
+         patch("claude_status.daemon.remove_stale_runtime"):
+        payload = {"hook_event_name": "UserPromptSubmit", "session_id": "sess-8"}
+        _process_hook_event(conn, payload)
+        conn.commit()
 
     row = conn.execute("SELECT * FROM runtime WHERE session_id = 'sess-8'").fetchone()
     assert row["state"] == "working"
@@ -175,7 +207,7 @@ def test_handle_notify_reads_stdin(tmp_path):
     """handle_notify should read JSON from stdin and update the DB."""
     db_path = tmp_path / "test.db"
     payload = json.dumps({
-        "hook_event_name": "UserPromptSubmit",
+        "hook_event_name": "PostToolUse",
         "session_id": "notify-test",
         "cwd": "/tmp",
     })
@@ -215,4 +247,61 @@ def test_last_activity_updates_on_post_tool_use(tmp_path):
 
     row = conn.execute("SELECT * FROM runtime WHERE session_id = 'sess-9'").fetchone()
     assert row["last_activity"] >= before
+    conn.close()
+
+
+def test_full_scan_events_trigger_scans(tmp_path):
+    """SessionStart and UserPromptSubmit should trigger full scans."""
+    conn = _make_db(tmp_path)
+
+    for event in ("SessionStart", "UserPromptSubmit"):
+        with patch("claude_status.daemon.scan_sessions") as mock_scan_sess, \
+             patch("claude_status.daemon.scan_runtime",
+                   return_value=set()) as mock_scan_rt, \
+             patch("claude_status.daemon.remove_stale_runtime") as mock_stale:
+            payload = {
+                "hook_event_name": event,
+                "session_id": f"scan-{event}",
+                "cwd": "/tmp",
+            }
+            _process_hook_event(conn, payload)
+            conn.commit()
+
+            mock_scan_sess.assert_called_once_with(conn)
+            mock_scan_rt.assert_called_once_with(conn, detect_states=False)
+            mock_stale.assert_called_once()
+
+    conn.close()
+
+
+def test_lightweight_events_skip_scans(tmp_path):
+    """PostToolUse, Stop, Notification, and SessionEnd should not trigger full scans."""
+    conn = _make_db(tmp_path)
+
+    # Set up session/runtime rows for events that need them.
+    for sid in ("light-PostToolUse", "light-Stop", "light-Notification", "light-SessionEnd"):
+        upsert_session(conn, {"session_id": sid})
+        upsert_runtime(conn, {"session_id": sid, "state": "working"})
+    conn.commit()
+
+    lightweight_events = [
+        {"hook_event_name": "PostToolUse", "session_id": "light-PostToolUse"},
+        {"hook_event_name": "Stop", "session_id": "light-Stop"},
+        {
+            "hook_event_name": "Notification",
+            "session_id": "light-Notification",
+            "notification_type": "permission_prompt",
+        },
+        {"hook_event_name": "SessionEnd", "session_id": "light-SessionEnd"},
+    ]
+
+    for payload in lightweight_events:
+        with patch("claude_status.daemon.scan_sessions") as mock_scan_sess, \
+             patch("claude_status.daemon.scan_runtime") as mock_scan_rt:
+            _process_hook_event(conn, payload)
+            conn.commit()
+
+            mock_scan_sess.assert_not_called()
+            mock_scan_rt.assert_not_called()
+
     conn.close()

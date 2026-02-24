@@ -15,6 +15,7 @@ from claude_status.db import (
     init_schema,
     remove_stale_runtime,
     update_meta,
+    update_runtime_process_info,
     upsert_runtime,
     upsert_runtime_state,
     upsert_session,
@@ -337,6 +338,60 @@ def test_upsert_runtime_state_fk_violation(tmp_path):
     conn = _make_db(tmp_path)
     with pytest.raises(sqlite3.IntegrityError):
         upsert_runtime_state(conn, "nonexistent", "working")
+    conn.close()
+
+
+def test_update_runtime_process_info_preserves_state(tmp_path):
+    """update_runtime_process_info should set pid/tty/tmux without touching state."""
+    conn = _make_db(tmp_path)
+    upsert_session(conn, {"session_id": "s1"})
+    upsert_runtime(conn, {
+        "session_id": "s1",
+        "pid": 100,
+        "tty": "ttys000",
+        "state": "waiting",
+        "last_activity": 500.0,
+    })
+    conn.commit()
+
+    update_runtime_process_info(conn, {
+        "session_id": "s1",
+        "pid": 200,
+        "tty": "ttys001",
+        "tmux_target": "main:0.0",
+        "tmux_session": "main",
+        "resume_arg": "my-session",
+    })
+    conn.commit()
+
+    row = conn.execute("SELECT * FROM runtime WHERE session_id = 's1'").fetchone()
+    assert row["pid"] == 200
+    assert row["tty"] == "ttys001"
+    assert row["tmux_target"] == "main:0.0"
+    assert row["tmux_session"] == "main"
+    assert row["resume_arg"] == "my-session"
+    # State and last_activity must be untouched
+    assert row["state"] == "waiting"
+    assert row["last_activity"] == 500.0
+    conn.close()
+
+
+def test_update_runtime_process_info_noop_on_missing_row(tmp_path):
+    """update_runtime_process_info should be a no-op if the runtime row doesn't exist."""
+    conn = _make_db(tmp_path)
+    upsert_session(conn, {"session_id": "s1"})
+    conn.commit()
+
+    # No runtime row exists; this should not raise or create one.
+    update_runtime_process_info(conn, {
+        "session_id": "s1",
+        "pid": 200,
+        "tty": "ttys001",
+    })
+    conn.commit()
+
+    row = conn.execute("SELECT * FROM runtime WHERE session_id = 's1'").fetchone()
+    assert row is None
     conn.close()
 
 

@@ -1,20 +1,22 @@
 # claude-status
 
-Real-time status tracking for Claude Code sessions. A background daemon keeps a SQLite database continuously updated with session metadata and runtime state, and a CLI provides quick queries. Other tools (dashboards, status bars, scripts) can read the database directly.
+Real-time status tracking for Claude Code sessions. Claude Code hooks push state transitions to a SQLite database as they happen, and a CLI provides quick queries. Other tools (dashboards, status bars, scripts) can read the database directly.
 
 ## Architecture
 
 ```text
-~/.claude/projects/*/     ──┐
-*.jsonl (conversation)    ──┤
-ps (claude processes)     ──┼──▶  daemon (polls every 3s)  ──▶  ~/.claude/claude-status.db
-tmux list-panes           ──┘                                         │
-                                                                      ▼
-                                                              claude-status CLI
-                                                              (or any SQLite reader)
+Claude Code hooks  ──┐
+  (SessionStart,     │
+   UserPromptSubmit, ├──▶  claude-status notify  ──▶  ~/.claude/claude-status.db
+   PostToolUse,      │       (state + metadata)              │
+   Stop, etc.)     ──┘                                       ▼
+                                                     claude-status CLI
+                                                     (or any SQLite reader)
 ```
 
-The daemon is the single writer. The database uses WAL mode so any number of readers (CLI, scripts, dashboards) can query concurrently without blocking.
+Hooks are the sole source of state. The `notify` command reads hook events from stdin, updates state in the database, and on low-frequency events (SessionStart, UserPromptSubmit) runs a full scan to populate metadata (pid, tmux pane, session catalog). The database uses WAL mode so any number of readers can query concurrently without blocking.
+
+A `poll` command is available for debugging and bootstrapping (populates the DB from scratch by scanning processes and session files).
 
 ## Requirements
 
@@ -36,32 +38,19 @@ To uninstall:
 uv tool uninstall claude-status
 ```
 
-## Usage
+## Hook Configuration
 
-### Daemon
-
-The daemon polls every 10 seconds by default, scanning session files, detecting running processes, mapping tmux panes, and updating the database. With hooks enabled, state transitions are near-instant and the daemon serves as a backup for metadata enrichment.
-
-```bash
-claude-status daemon start              # start in background
-claude-status daemon start --interval 5 # custom poll interval (seconds)
-claude-status daemon start --foreground # run in foreground (for debugging)
-claude-status daemon status             # check if running, show last poll time
-claude-status daemon stop               # graceful shutdown
-claude-status daemon poll               # run a single poll iteration (no daemon)
-```
-
-The daemon writes a PID file to `~/.claude/claude-status-daemon.pid`.
-
-### Hook integration
-
-Claude Code [hooks](https://docs.anthropic.com/en/docs/claude-code/hooks) can push state transitions to the database instantly, eliminating the up-to-10-second polling delay. The daemon still handles full metadata discovery (pid, tmux, session catalog); hooks just make state changes (`working`, `idle`, `waiting`) appear immediately.
-
-Add the following to `~/.claude/settings.json`:
+Add the following to `~/.claude/settings.json` to enable real-time state tracking:
 
 ```json
 {
   "hooks": {
+    "SessionStart": [
+      {
+        "matcher": {},
+        "hooks": [{ "type": "command", "command": "claude-status notify", "async": true }]
+      }
+    ],
     "UserPromptSubmit": [
       {
         "matcher": {},
@@ -96,17 +85,22 @@ Add the following to `~/.claude/settings.json`:
 }
 ```
 
-Event mapping:
+All hooks use `"async": true` so they never block Claude Code. The `notify` command reads JSON from stdin, updates the database, and exits silently on any error.
 
-| Hook Event         | DB Action                              |
-| ---------------    | -------------------------------------- |
-| `UserPromptSubmit` | state = "working"                      |
-| `PostToolUse`      | state = "working", update last_activity|
-| `Stop`             | state = "idle"                         |
-| `Notification`     | state = "waiting" (permission prompts) |
-| `SessionEnd`       | delete runtime row                     |
+### Event mapping
 
-All hooks use `"async": true` so they never block Claude. The `notify` command reads JSON from stdin, updates the database, and exits silently on any error.
+| Hook Event         | State Action                       | Full Scan? |
+| ------------------ | ---------------------------------- | ---------- |
+| `SessionStart`     | state = "idle"                     | Yes        |
+| `UserPromptSubmit` | state = "working"                  | Yes        |
+| `PostToolUse`      | state = "working", last_activity   | No         |
+| `Stop`             | state = "idle"                     | No         |
+| `Notification`     | state = "waiting" (if perm prompt) | No         |
+| `SessionEnd`       | delete runtime row                 | No         |
+
+"Full scan" means the hook also refreshes the session catalog, updates pid/tty/tmux info from running processes, and cleans up stale runtime rows. PostToolUse fires many times per turn, so it only updates state to keep latency low.
+
+## Usage
 
 ### Listing sessions
 
@@ -133,6 +127,14 @@ Example output:
 claude-status show SESSION_ID          # full or partial UUID
 claude-status show abc123 --json       # JSON output
 ```
+
+### Poll (debug/bootstrap)
+
+```bash
+claude-status poll                     # one-shot scan of processes + session files
+```
+
+Use `poll` to bootstrap the database before any hooks have fired, or to debug state by forcing a full scan with process-based state detection.
 
 ### Database path
 
@@ -186,7 +188,7 @@ sqlite3 ~/.claude/claude-status.db "SELECT * FROM runtime WHERE state = 'working
 | last_activity  | REAL    | Last JSONL write (epoch)            |
 | updated_at     | TEXT    | Last DB update                      |
 
-**meta** - daemon metadata (e.g. `last_poll` timestamp).
+**meta** - metadata (e.g. `last_poll` timestamp).
 
 ## Development
 

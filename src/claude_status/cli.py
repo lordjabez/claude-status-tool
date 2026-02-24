@@ -1,4 +1,4 @@
-"""CLI entry point with subcommands for querying and daemon management."""
+"""CLI entry point with subcommands for querying session state."""
 
 import argparse
 import json
@@ -7,14 +7,7 @@ import sys
 import time
 from datetime import datetime
 
-from claude_status.daemon import (
-    DEFAULT_INTERVAL,
-    get_daemon_status,
-    handle_notify,
-    poll_once,
-    start_daemon,
-    stop_daemon,
-)
+from claude_status.daemon import handle_notify, poll_once
 from claude_status.db import (
     get_active_sessions,
     get_all_sessions,
@@ -196,29 +189,10 @@ def cmd_show(args: argparse.Namespace) -> None:
             print(f"  Last activity: {human_relative(d['last_activity'])}")
 
 
-def cmd_daemon(args: argparse.Namespace) -> None:
-    """Handle the daemon subcommand."""
-    action = args.daemon_action
-
-    if action == "start":
-        start_daemon(interval=args.interval, foreground=args.foreground)
-    elif action == "stop":
-        if stop_daemon():
-            print("Daemon stopped")
-        else:
-            print("Daemon is not running", file=sys.stderr)
-            sys.exit(1)
-    elif action == "status":
-        status = get_daemon_status()
-        if status["running"]:
-            print(f"  Running (PID {status['pid']})")
-            if status["last_poll"]:
-                print(f"  Last poll: {status['last_poll']}")
-        else:
-            print("  Not running")
-    elif action == "poll":
-        poll_once()
-        print("Poll complete")
+def cmd_poll(_args: argparse.Namespace) -> None:
+    """Handle the poll subcommand."""
+    poll_once()
+    print("Poll complete")
 
 
 def cmd_notify(_args: argparse.Namespace) -> None:
@@ -258,25 +232,11 @@ def main() -> None:
     p_show.add_argument("--json", action="store_true", help="JSON output")
     p_show.set_defaults(func=cmd_show)
 
-    # daemon
-    p_daemon = subparsers.add_parser("daemon", help="Manage the background daemon")
-    p_daemon.set_defaults(func=cmd_daemon)
-    daemon_sub = p_daemon.add_subparsers(dest="daemon_action")
-    daemon_sub.required = True
-
-    p_start = daemon_sub.add_parser("start", help="Start the daemon")
-    p_start.add_argument(
-        "--interval", "-i", type=int, default=DEFAULT_INTERVAL,
-        help=f"Poll interval in seconds (default: {DEFAULT_INTERVAL})",
+    # poll
+    p_poll = subparsers.add_parser(
+        "poll", help="Run a single poll iteration (debug/bootstrap)",
     )
-    p_start.add_argument(
-        "--foreground", "-f", action="store_true",
-        help="Run in the foreground (don't daemonize)",
-    )
-
-    daemon_sub.add_parser("stop", help="Stop the daemon")
-    daemon_sub.add_parser("status", help="Check daemon status")
-    daemon_sub.add_parser("poll", help="Run a single poll iteration")
+    p_poll.set_defaults(func=cmd_poll)
 
     # notify
     p_notify = subparsers.add_parser("notify", help="Process a hook event from stdin")

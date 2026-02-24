@@ -6,7 +6,7 @@ import re
 import sqlite3
 from pathlib import Path
 
-from claude_status.db import upsert_runtime, upsert_session
+from claude_status.db import update_runtime_process_info, upsert_runtime, upsert_session
 from claude_status.process import (
     detect_state,
     get_claude_processes,
@@ -271,8 +271,12 @@ def _parse_jsonl(filepath: Path) -> dict | None:
     }
 
 
-def scan_runtime(conn: sqlite3.Connection) -> set[str]:
-    """Detect running claude processes and build runtime state.
+def scan_runtime(conn: sqlite3.Connection, detect_states: bool = True) -> set[str]:
+    """Detect running claude processes and update runtime info.
+
+    When detect_states=True (default, used by poll), infers state from JSONL and
+    does a full upsert_runtime.  When False (used by hook dispatch), only updates
+    pid/tty/tmux without touching hook-set state.
 
     Returns set of active session IDs.
     """
@@ -301,41 +305,26 @@ def scan_runtime(conn: sqlite3.Connection) -> set[str]:
             if client_tty:
                 tty = client_tty.removeprefix("/dev/")
 
-        # Look up jsonl_path for state detection
-        row = conn.execute(
-            "SELECT jsonl_path FROM sessions WHERE session_id = ?", (session_id,)
-        ).fetchone()
-        jsonl_path = row["jsonl_path"] if row else None
-
-        state, last_activity = detect_state(jsonl_path)
-
-        # Hooks set state from actual events (authoritative); the daemon infers
-        # state from JSONL mtime (heuristic).  When a hook has already written a
-        # runtime row, preserve its state so the daemon doesn't overwrite it with
-        # a stale inference.  The daemon still updates pid/tty/tmux/resume_arg.
-        existing = conn.execute(
-            "SELECT state FROM runtime WHERE session_id = ?", (session_id,),
-        ).fetchone()
-        if existing:
-            # "working" from mtime is the least reliable inference — never let
-            # it overwrite a more specific hook-set state like "waiting".
-            if state == "working" and existing["state"] == "waiting":
-                state = "waiting"
-            # If the daemon has no jsonl_path it falls back to "idle", but the
-            # hook already knows the real state; keep it.
-            if jsonl_path is None:
-                state = existing["state"]
-
-        upsert_runtime(conn, {
+        process_data = {
             "session_id": session_id,
             "pid": proc["pid"],
             "tty": tty,
             "tmux_target": tmux_info.get("target"),
             "tmux_session": tmux_info.get("session"),
             "resume_arg": proc["resume_arg"],
-            "state": state,
-            "last_activity": last_activity,
-        })
+        }
+
+        if detect_states:
+            row = conn.execute(
+                "SELECT jsonl_path FROM sessions WHERE session_id = ?", (session_id,)
+            ).fetchone()
+            jsonl_path = row["jsonl_path"] if row else None
+            state, last_activity = detect_state(jsonl_path)
+            process_data["state"] = state
+            process_data["last_activity"] = last_activity
+            upsert_runtime(conn, process_data)
+        else:
+            update_runtime_process_info(conn, process_data)
 
     return active_session_ids
 
