@@ -98,7 +98,8 @@ def _process_hook_event(conn: sqlite3.Connection, payload: dict) -> bool:
             pass  # Session row doesn't exist yet; nothing to update.
 
     elif event == "Notification":
-        if payload.get("notification_type") == "permission_prompt":
+        ntype = payload.get("notification_type")
+        if ntype in ("permission_prompt", "elicitation_dialog"):
             try:
                 upsert_runtime_state(conn, session_id, "waiting")
                 changed = prev_state != "waiting"

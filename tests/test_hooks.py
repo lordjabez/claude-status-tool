@@ -176,6 +176,25 @@ def test_notification_permission_prompt_sets_waiting(tmp_path):
     conn.close()
 
 
+def test_notification_elicitation_dialog_sets_waiting(tmp_path):
+    conn = _make_db(tmp_path)
+    upsert_session(conn, {"session_id": "sess-elicit"})
+    upsert_runtime(conn, {"session_id": "sess-elicit", "state": "working"})
+    conn.commit()
+
+    payload = {
+        "hook_event_name": "Notification",
+        "session_id": "sess-elicit",
+        "notification_type": "elicitation_dialog",
+    }
+    _process_hook_event(conn, payload)
+    conn.commit()
+
+    row = conn.execute("SELECT * FROM runtime WHERE session_id = 'sess-elicit'").fetchone()
+    assert row["state"] == "waiting"
+    conn.close()
+
+
 def test_notification_other_type_ignored(tmp_path):
     conn = _make_db(tmp_path)
     upsert_session(conn, {"session_id": "sess-5"})
