@@ -288,7 +288,7 @@ def test_upsert_runtime_state_insert(tmp_path):
 
 
 def test_upsert_runtime_state_preserves_fields(tmp_path):
-    """upsert_runtime_state should not wipe pid/tty/tmux already set by the daemon."""
+    """upsert_runtime_state should not wipe pid/tty/tmux already set by process scan."""
     conn = _make_db(tmp_path)
     upsert_session(conn, {"session_id": "s1"})
     upsert_runtime(conn, {

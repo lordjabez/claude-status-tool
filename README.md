@@ -7,14 +7,15 @@ Real-time status tracking for Claude Code sessions. Claude Code hooks push state
 ```text
 Claude Code hooks  ──┐
   (SessionStart,     │
-   UserPromptSubmit, ├──▶  claude-status notify  ──▶  ~/.claude/claude-status.db
+   UserPromptSubmit, │
+   PreToolUse,       ├──▶  claude-status notify  ──▶  ~/.claude/claude-status.db
    PostToolUse,      │       (state + metadata)              │
-   Stop, etc.)     ──┘                                       ▼
-                                                     claude-status CLI
+   PermissionRequest,│                                       ▼
+   Stop, etc.)     ──┘                               claude-status CLI
                                                      (or any SQLite reader)
 ```
 
-Hooks are the sole source of state. The `notify` command reads hook events from stdin, updates state in the database, and on low-frequency events (SessionStart, UserPromptSubmit) runs a full scan to populate metadata (pid, tmux pane, session catalog). The database uses WAL mode so any number of readers can query concurrently without blocking.
+Hooks are the sole source of state. The `notify` command reads hook events from stdin, updates state in the database, and runs a throttled full scan (at most once per second) to populate metadata (pid, tmux pane, session catalog). The database uses WAL mode so any number of readers can query concurrently without blocking.
 
 A `poll` command is available for debugging and bootstrapping (populates the DB from scratch by scanning processes and session files).
 
@@ -57,7 +58,25 @@ Add the following to `~/.claude/settings.json` to enable real-time state trackin
         "hooks": [{ "type": "command", "command": "claude-status notify", "async": true }]
       }
     ],
+    "PreToolUse": [
+      {
+        "matcher": {},
+        "hooks": [{ "type": "command", "command": "claude-status notify", "async": true }]
+      }
+    ],
     "PostToolUse": [
+      {
+        "matcher": {},
+        "hooks": [{ "type": "command", "command": "claude-status notify", "async": true }]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "matcher": {},
+        "hooks": [{ "type": "command", "command": "claude-status notify", "async": true }]
+      }
+    ],
+    "TaskCompleted": [
       {
         "matcher": {},
         "hooks": [{ "type": "command", "command": "claude-status notify", "async": true }]
@@ -89,16 +108,19 @@ All hooks use `"async": true` so they never block Claude Code. The `notify` comm
 
 ### Event mapping
 
-| Hook Event         | State Action                       | Full Scan? |
-| ------------------ | ---------------------------------- | ---------- |
-| `SessionStart`     | state = "idle"                     | Yes        |
-| `UserPromptSubmit` | state = "working"                  | Yes        |
-| `PostToolUse`      | state = "working", last_activity   | No         |
-| `Stop`             | state = "idle"                     | No         |
-| `Notification`     | state = "waiting" (if perm prompt) | No         |
-| `SessionEnd`       | delete runtime row                 | No         |
+| Hook Event          | State Action                       |
+| ------------------- | ---------------------------------- |
+| `SessionStart`      | state = "idle"                     |
+| `UserPromptSubmit`  | state = "working"                  |
+| `PreToolUse`        | state = "working"                  |
+| `PostToolUse`       | state = "working", last_activity   |
+| `PermissionRequest` | state = "waiting"                  |
+| `TaskCompleted`     | state = "working"                  |
+| `Stop`              | state = "idle"                     |
+| `Notification`      | state = "waiting" (if perm prompt) |
+| `SessionEnd`        | delete runtime row                 |
 
-"Full scan" means the hook also refreshes the session catalog, updates pid/tty/tmux info from running processes, and cleans up stale runtime rows. PostToolUse fires many times per turn, so it only updates state to keep latency low.
+Every event updates state immediately. A full scan (session catalog, pid/tty/tmux info, stale cleanup) runs if the last scan was more than 1 second ago, keeping things current without redundant subprocess calls during rapid tool-use bursts.
 
 ## Usage
 
@@ -135,6 +157,16 @@ claude-status poll                     # one-shot scan of processes + session fi
 ```
 
 Use `poll` to bootstrap the database before any hooks have fired, or to debug state by forcing a full scan with process-based state detection.
+
+### Demo mode
+
+```bash
+claude-status demo                     # 3 mock sessions, transitions every 3s
+claude-status demo --count 5           # 5 mock sessions
+claude-status demo --interval 1.0      # faster transitions
+```
+
+Creates mock sessions that cycle through states, useful for testing dashboards and other consumers. Sends UDP notifications on each change. Ctrl+C to stop and clean up.
 
 ### Database path
 
@@ -185,10 +217,10 @@ sqlite3 ~/.claude/claude-status.db "SELECT * FROM runtime WHERE state = 'working
 | tmux_session   | TEXT    | tmux session name                   |
 | resume_arg     | TEXT    | Value of --resume if used           |
 | state          | TEXT    | working, idle, or waiting (checked) |
-| last_activity  | REAL    | Last JSONL write (epoch)            |
+| last_activity  | REAL    | Last activity timestamp (epoch)     |
 | updated_at     | TEXT    | Last DB update                      |
 
-**meta** - metadata (e.g. `last_poll` timestamp).
+**meta** - key-value metadata (e.g. `last_scan` throttle timestamp, `last_poll` debug timestamp).
 
 ## Development
 

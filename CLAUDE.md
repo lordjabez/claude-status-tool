@@ -20,11 +20,12 @@ src/claude_status/
   db.py        # SQLite schema, connection (WAL), upsert/query helpers
   process.py   # ps parsing, lsof CWD lookup, tmux mapping, JSONL-based state detection
   scanner.py   # Session catalog scan (index + JSONL fallback), session ID resolution, runtime process info
-  daemon.py    # Hook event dispatch, full-scan logic, poll_once debug tool, UDP notify
-  cli.py       # argparse CLI: list, show, poll, notify, db
+  daemon.py    # Hook event dispatch, throttled full-scan, poll_once debug tool, UDP notify
+  demo.py      # Demo mode: mock sessions cycling through states for testing consumers
+  cli.py       # argparse CLI: list, show, poll, notify, demo, db
 ```
 
-Dependency flow: `cli -> daemon -> scanner -> db, process`
+Dependency flow: `cli -> daemon, demo -> scanner -> db, process`
 
 ## Development Commands
 
@@ -55,12 +56,13 @@ Or use `uv run claude-status ...` which picks up edits automatically.
 
 On hook events, the notify command reads from:
 
-- `~/.claude/projects/*/sessions-index.json` for fast session metadata (full-scan events only)
-- `~/.claude/projects/*/*.jsonl` as fallback (mtime-guarded to avoid re-parsing, full-scan events only)
-- `ps -eo pid,tty,args` + `lsof` for running process detection (full-scan events only)
-- `tmux list-panes` + `tmux list-clients` for pane mapping and client TTY resolution (full-scan events only)
+- `~/.claude/projects/*/sessions-index.json` for fast session metadata
+- `~/.claude/projects/*/*.jsonl` as fallback (mtime-guarded to avoid re-parsing)
+- `ps -eo pid,tty,args` + `lsof` for running process detection
+- `tmux list-panes` + `tmux list-clients` for pane mapping and client TTY resolution
 
-Full scans run on `SessionStart` and `UserPromptSubmit`. Lightweight events (`PostToolUse`, `Stop`, `Notification`, `SessionEnd`) only update state.
+Every hook event updates state immediately, then runs a full scan if the last scan was more
+than 1 second ago (throttled to avoid redundant subprocess calls during rapid tool-use bursts).
 
 ## Key Design Decisions
 
@@ -71,5 +73,7 @@ Full scans run on `SessionStart` and `UserPromptSubmit`. Lightweight events (`Po
   directory names by greedy matching against existing paths on disk
 - Session ID resolution for bare `claude` processes (no `--resume`) uses `lsof` to get the
   process CWD and matches it to a project path in the database
-- `scan_runtime_process_info()` updates pid/tty/tmux without touching state, preserving
+- `update_runtime_process_info()` updates pid/tty/tmux without touching state, preserving
   hook-set state values
+- After `/clear` or `/compact`, process `--resume` args become stale; `scan_runtime` uses
+  a PID map from existing runtime rows and a CWD fallback to match processes correctly

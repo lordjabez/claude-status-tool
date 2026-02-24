@@ -10,6 +10,7 @@ from pathlib import Path
 from claude_status.db import (
     delete_runtime,
     get_connection,
+    get_meta,
     init_schema,
     remove_stale_runtime,
     update_meta,
@@ -19,9 +20,7 @@ from claude_status.db import (
 from claude_status.scanner import scan_runtime, scan_sessions
 
 NOTIFY_PORT = 25283
-
-# Events that trigger a full scan (session catalog + process info + stale cleanup).
-_FULL_SCAN_EVENTS = {"SessionStart", "UserPromptSubmit"}
+_SCAN_THROTTLE_SECONDS = 1.0
 
 
 def _notify_udp() -> None:
@@ -52,24 +51,49 @@ def poll_once(db_path: Path | None = None) -> None:
         conn.close()
 
 
-def _process_hook_event(conn: sqlite3.Connection, payload: dict) -> None:
-    """Dispatch a hook event to the appropriate DB update."""
+def _get_current_state(conn: sqlite3.Connection, session_id: str) -> str | None:
+    """Return the current runtime state for a session, or None if no row exists."""
+    row = conn.execute(
+        "SELECT state FROM runtime WHERE session_id = ?", (session_id,),
+    ).fetchone()
+    return row["state"] if row else None
+
+
+def _process_hook_event(conn: sqlite3.Connection, payload: dict) -> bool:
+    """Dispatch a hook event to the appropriate DB update.
+
+    Returns True if a consumer-visible change occurred (state transition,
+    session added/removed, or a scan ran that may have updated metadata).
+    """
     event = payload.get("hook_event_name", "")
     session_id = payload.get("session_id")
     if not session_id:
-        return
+        return False
+
+    changed = False
+    prev_state = _get_current_state(conn, session_id)
 
     if event == "SessionStart":
         upsert_session(conn, {"session_id": session_id, "cwd": payload.get("cwd")})
         upsert_runtime_state(conn, session_id, "idle")
+        changed = True  # New session always matters.
 
-    elif event in ("UserPromptSubmit", "PostToolUse"):
+    elif event in ("UserPromptSubmit", "PreToolUse", "PostToolUse", "TaskCompleted"):
         upsert_session(conn, {"session_id": session_id, "cwd": payload.get("cwd")})
         upsert_runtime_state(conn, session_id, "working", time.time())
+        changed = prev_state != "working"
+
+    elif event == "PermissionRequest":
+        try:
+            upsert_runtime_state(conn, session_id, "waiting")
+            changed = prev_state != "waiting"
+        except sqlite3.IntegrityError:
+            pass  # Session row doesn't exist yet; nothing to update.
 
     elif event == "Stop":
         try:
             upsert_runtime_state(conn, session_id, "idle")
+            changed = prev_state != "idle"
         except sqlite3.IntegrityError:
             pass  # Session row doesn't exist yet; nothing to update.
 
@@ -77,20 +101,31 @@ def _process_hook_event(conn: sqlite3.Connection, payload: dict) -> None:
         if payload.get("notification_type") == "permission_prompt":
             try:
                 upsert_runtime_state(conn, session_id, "waiting")
+                changed = prev_state != "waiting"
             except sqlite3.IntegrityError:
                 pass
 
     elif event == "SessionEnd":
         delete_runtime(conn, session_id)
+        changed = prev_state is not None  # Only matters if a row existed.
 
-    # Full-scan events: refresh session catalog, process info, and stale cleanup.
-    if event in _FULL_SCAN_EVENTS:
+    # Throttled full scan: refresh session catalog, process info, and stale cleanup.
+    # State updates above are always immediate; the scan is the expensive part
+    # (subprocess calls to ps/lsof/tmux), so skip it if one ran recently.
+    # A scan may update metadata or clean up stale rows, so always notify after one.
+    last_scan = get_meta(conn, "last_scan")
+    now = time.time()
+    if last_scan is None or now - float(last_scan) >= _SCAN_THROTTLE_SECONDS:
         scan_sessions(conn)
         active_ids = scan_runtime(conn, detect_states=False)
-        # Include the current session_id so the just-created row isn't cleaned up
-        # before ps can see the process.
+        # Protect the current session from stale cleanup — the process may not
+        # be visible to ps yet, or _resolve_session_id may not map it correctly.
         active_ids.add(session_id)
         remove_stale_runtime(conn, active_ids)
+        update_meta(conn, "last_scan", str(now))
+        changed = True
+
+    return changed
 
 
 def handle_notify() -> None:
@@ -106,9 +141,10 @@ def handle_notify() -> None:
         conn = get_connection()
         try:
             init_schema(conn)
-            _process_hook_event(conn, payload)
+            changed = _process_hook_event(conn, payload)
             conn.commit()
-            _notify_udp()
+            if changed:
+                _notify_udp()
         finally:
             conn.close()
     except Exception:

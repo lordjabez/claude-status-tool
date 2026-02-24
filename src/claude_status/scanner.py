@@ -1,4 +1,4 @@
-"""Session catalog scanning, ID resolution, and state detection."""
+"""Session catalog scanning, ID resolution, and runtime process info."""
 
 import json
 import os
@@ -284,35 +284,40 @@ def scan_runtime(conn: sqlite3.Connection, detect_states: bool = True) -> set[st
     if not processes:
         return set()
 
+    # Build a PID→session_id map and session_id set from existing runtime rows.
+    # Hook events create runtime rows with the authoritative session_id before
+    # scan_runtime runs.  After /clear or /compact, the process's --resume arg
+    # still references the old session name, so _resolve_session_id would map the
+    # PID to the wrong session.  Trusting the existing runtime mapping avoids this.
+    pid_map: dict[int, str] = {}
+    runtime_session_ids: set[str] = set()
+    for row in conn.execute("SELECT session_id, pid FROM runtime"):
+        runtime_session_ids.add(row["session_id"])
+        if row["pid"] is not None:
+            pid_map[row["pid"]] = row["session_id"]
+
     tmux_map = get_tmux_pane_map()
     client_map = get_tmux_client_map()
     active_session_ids: set[str] = set()
+    matched_pids: set[int] = set()
 
     for proc in processes:
-        session_id = _resolve_session_id(conn, proc)
+        session_id = pid_map.get(proc["pid"]) or _resolve_session_id(conn, proc)
         if session_id is None:
             continue
 
+        # In hook mode (detect_states=False), update_runtime_process_info is UPDATE-only
+        # and no-ops when the resolved session has no runtime row. Treat the process as
+        # unmatched so the CWD fallback in _match_pidless_runtime can assign it correctly.
+        if not detect_states and session_id not in runtime_session_ids:
+            continue
+
         active_session_ids.add(session_id)
+        matched_pids.add(proc["pid"])
 
-        tty = proc["tty"]
-        tty_device = resolve_tty_device(tty)
-        tmux_info = tmux_map.get(tty_device, {})
-
-        # If running in tmux, use the client terminal's TTY instead of the pane PTY
-        if tmux_info:
-            client_tty = client_map.get(tmux_info.get("session", ""))
-            if client_tty:
-                tty = client_tty.removeprefix("/dev/")
-
-        process_data = {
-            "session_id": session_id,
-            "pid": proc["pid"],
-            "tty": tty,
-            "tmux_target": tmux_info.get("target"),
-            "tmux_session": tmux_info.get("session"),
-            "resume_arg": proc["resume_arg"],
-        }
+        process_data = _build_process_data(
+            proc, session_id, tmux_map, client_map,
+        )
 
         if detect_states:
             row = conn.execute(
@@ -326,7 +331,98 @@ def scan_runtime(conn: sqlite3.Connection, detect_states: bool = True) -> set[st
         else:
             update_runtime_process_info(conn, process_data)
 
+    # Match runtime rows that have no PID yet (hook-created after /clear or /compact)
+    # to unmatched processes by CWD.
+    _match_pidless_runtime(conn, processes, matched_pids, active_session_ids,
+                           tmux_map, client_map, detect_states)
+
     return active_session_ids
+
+
+def _build_process_data(
+    proc: dict,
+    session_id: str,
+    tmux_map: dict[str, dict[str, str]],
+    client_map: dict[str, str],
+) -> dict:
+    """Build the process_data dict for a resolved process."""
+    tty = proc["tty"]
+    tty_device = resolve_tty_device(tty)
+    tmux_info = tmux_map.get(tty_device, {})
+
+    # If running in tmux, use the client terminal's TTY instead of the pane PTY
+    if tmux_info:
+        client_tty = client_map.get(tmux_info.get("session", ""))
+        if client_tty:
+            tty = client_tty.removeprefix("/dev/")
+
+    return {
+        "session_id": session_id,
+        "pid": proc["pid"],
+        "tty": tty,
+        "tmux_target": tmux_info.get("target"),
+        "tmux_session": tmux_info.get("session"),
+        "resume_arg": proc["resume_arg"],
+    }
+
+
+def _match_pidless_runtime(
+    conn: sqlite3.Connection,
+    processes: list[dict],
+    matched_pids: set[int],
+    active_session_ids: set[str],
+    tmux_map: dict[str, dict[str, str]],
+    client_map: dict[str, str],
+    detect_states: bool,
+) -> None:
+    """Match runtime rows with no PID to unmatched processes by CWD.
+
+    After /clear or /compact, hooks create a runtime row for the new session before
+    the process scan runs.  The process's --resume arg still references the old
+    session, so normal resolution misses the new row.  We match by comparing the
+    process's working directory to the session's cwd stored in the sessions table.
+    """
+    pidless_rows = conn.execute(
+        """SELECT r.session_id, s.cwd, s.project_path
+           FROM runtime r
+           JOIN sessions s ON r.session_id = s.session_id
+           WHERE r.pid IS NULL""",
+    ).fetchall()
+    if not pidless_rows:
+        return
+
+    unmatched = [p for p in processes if p["pid"] not in matched_pids]
+    if not unmatched:
+        return
+
+    # Build CWD→process map for unmatched processes
+    cwd_procs: dict[str, dict] = {}
+    for proc in unmatched:
+        cwd = get_process_cwd(proc["pid"])
+        if cwd:
+            cwd_procs[cwd] = proc
+
+    for row in pidless_rows:
+        session_cwd = row["cwd"] or row["project_path"]
+        if not session_cwd:
+            continue
+        proc = cwd_procs.get(session_cwd)
+        if proc is None:
+            continue
+
+        active_session_ids.add(row["session_id"])
+        matched_pids.add(proc["pid"])
+
+        process_data = _build_process_data(
+            proc, row["session_id"], tmux_map, client_map,
+        )
+        if detect_states:
+            # No JSONL path available for CWD-matched processes; default to idle.
+            process_data["state"] = "idle"
+            process_data["last_activity"] = None
+            upsert_runtime(conn, process_data)
+        else:
+            update_runtime_process_info(conn, process_data)
 
 
 def _resolve_session_id(conn: sqlite3.Connection, proc: dict) -> str | None:

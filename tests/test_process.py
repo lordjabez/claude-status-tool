@@ -16,7 +16,7 @@ def test_is_claude_process_basic():
 def test_is_claude_process_excludes():
     assert not _is_claude_process("tmux new -s claude")
     assert not _is_claude_process("/Applications/Claude.app/Contents/MacOS/Claude")
-    assert not _is_claude_process("claude-status daemon start")
+    assert not _is_claude_process("claude-status notify")
 
 
 def test_extract_resume_arg():

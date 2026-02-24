@@ -16,6 +16,7 @@ from claude_status.db import (
     get_session,
     init_schema,
 )
+from claude_status.demo import run_demo
 
 
 def format_ts(ts_str: str) -> str:
@@ -200,7 +201,12 @@ def cmd_notify(_args: argparse.Namespace) -> None:
     handle_notify()
 
 
-def cmd_db(args: argparse.Namespace) -> None:
+def cmd_demo(args: argparse.Namespace) -> None:
+    """Handle the demo subcommand."""
+    run_demo(count=args.count, interval=args.interval)
+
+
+def cmd_db(_args: argparse.Namespace) -> None:
     """Print the database path."""
     print(get_db_path())
 
@@ -241,6 +247,20 @@ def main() -> None:
     # notify
     p_notify = subparsers.add_parser("notify", help="Process a hook event from stdin")
     p_notify.set_defaults(func=cmd_notify)
+
+    # demo
+    p_demo = subparsers.add_parser(
+        "demo", help="Run mock sessions that cycle through states (for testing consumers)",
+    )
+    p_demo.add_argument(
+        "--count", "-c", type=int, default=3,
+        help="Number of mock sessions (1-5, default: 3)",
+    )
+    p_demo.add_argument(
+        "--interval", "-i", type=float, default=3.0,
+        help="Seconds between state transitions (default: 3.0)",
+    )
+    p_demo.set_defaults(func=cmd_demo)
 
     # db
     p_db = subparsers.add_parser("db", help="Print the database path")

@@ -130,7 +130,7 @@ def upsert_runtime_state(
     state: str,
     last_activity: float | None = None,
 ) -> None:
-    """Update only state and last_activity, preserving daemon-set fields like pid/tty/tmux."""
+    """Update only state and last_activity, preserving process-info fields (pid/tty/tmux)."""
     now = _now()
     conn.execute(
         """INSERT INTO runtime (session_id, state, last_activity, updated_at)

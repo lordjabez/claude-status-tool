@@ -2,8 +2,14 @@
 
 import json
 from pathlib import Path
+from unittest.mock import patch
 
-from claude_status.db import get_connection, init_schema, upsert_session
+from claude_status.db import (
+    get_connection,
+    init_schema,
+    upsert_runtime_state,
+    upsert_session,
+)
 from claude_status.scanner import (
     _looks_like_uuid,
     _parse_jsonl,
@@ -11,6 +17,7 @@ from claude_status.scanner import (
     _resolve_session_id,
     _truncate,
     folder_label,
+    scan_runtime,
 )
 
 
@@ -193,5 +200,95 @@ def test_resolve_session_id_after_rename(tmp_path):
     proc = {"pid": 1234, "tty": "ttys000", "resume_arg": "Old Name"}
     result = _resolve_session_id(conn, proc)
     assert result == "new-2222"
+
+    conn.close()
+
+
+def test_scan_runtime_matches_pidless_row_after_clear(tmp_path):
+    """After /clear, the hook creates a runtime row for the new session (pid=NULL).
+
+    The process's --resume arg still references the old session name.
+    scan_runtime should match the process to the new session by CWD, not
+    resolve it to the stale old session via the --resume arg.
+    """
+    conn = _make_db(tmp_path)
+
+    # Old session: had a title, now ended (no runtime row)
+    upsert_session(conn, {
+        "session_id": "old-session",
+        "slug": "old-slug",
+        "custom_title": "My Project",
+        "cwd": "/projects/myapp",
+        "modified_at": "2026-01-01T00:00:00Z",
+    })
+
+    # New session after /clear: hook created session + runtime (pid=NULL)
+    upsert_session(conn, {
+        "session_id": "new-session",
+        "cwd": "/projects/myapp",
+        "modified_at": "2026-01-02T00:00:00Z",
+    })
+    upsert_runtime_state(conn, "new-session", "idle")
+    conn.commit()
+
+    # Verify pid is NULL
+    row = conn.execute("SELECT pid FROM runtime WHERE session_id = 'new-session'").fetchone()
+    assert row["pid"] is None
+
+    # Mock: one process with --resume pointing to the OLD session name
+    mock_processes = [{"pid": 5555, "tty": "ttys001", "resume_arg": "My Project"}]
+
+    with patch("claude_status.scanner.get_claude_processes", return_value=mock_processes), \
+         patch("claude_status.scanner.get_tmux_pane_map", return_value={}), \
+         patch("claude_status.scanner.get_tmux_client_map", return_value={}), \
+         patch("claude_status.scanner.get_process_cwd", return_value="/projects/myapp"):
+        active_ids = scan_runtime(conn, detect_states=False)
+
+    conn.commit()
+
+    # The new session should be in active IDs and have the PID populated
+    assert "new-session" in active_ids
+    row = conn.execute("SELECT pid FROM runtime WHERE session_id = 'new-session'").fetchone()
+    assert row["pid"] == 5555
+
+    conn.close()
+
+
+def test_scan_runtime_pid_map_prevents_stale_resolution(tmp_path):
+    """If a runtime row already maps a PID to a session, scan_runtime should
+    trust that mapping over _resolve_session_id (which uses stale --resume args).
+    """
+    conn = _make_db(tmp_path)
+
+    upsert_session(conn, {
+        "session_id": "correct-session",
+        "cwd": "/projects/myapp",
+        "modified_at": "2026-01-02T00:00:00Z",
+    })
+    # Runtime row already has the PID (e.g., from a previous scan)
+    conn.execute(
+        """INSERT INTO runtime (session_id, pid, state, updated_at)
+           VALUES ('correct-session', 5555, 'working', '2026-01-02T00:00:00Z')"""
+    )
+
+    # Old session that _resolve_session_id would incorrectly match
+    upsert_session(conn, {
+        "session_id": "stale-session",
+        "slug": "old-slug",
+        "custom_title": "Old Title",
+        "modified_at": "2026-01-01T00:00:00Z",
+    })
+    conn.commit()
+
+    mock_processes = [{"pid": 5555, "tty": "ttys001", "resume_arg": "Old Title"}]
+
+    with patch("claude_status.scanner.get_claude_processes", return_value=mock_processes), \
+         patch("claude_status.scanner.get_tmux_pane_map", return_value={}), \
+         patch("claude_status.scanner.get_tmux_client_map", return_value={}):
+        active_ids = scan_runtime(conn, detect_states=False)
+
+    # Should use the pid_map, not _resolve_session_id
+    assert "correct-session" in active_ids
+    assert "stale-session" not in active_ids
 
     conn.close()
