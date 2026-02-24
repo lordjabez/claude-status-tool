@@ -8,7 +8,7 @@ querying. A `poll` command is available for debugging and bootstrapping.
 
 ## Architecture
 
-- **Hook-driven**: hooks are the sole source of state; no background daemon
+- **Hook-driven**: hooks are the sole source of state; no background polling
 - **Single writer per event** (notify command), **multiple readers** (CLI, scripts, dashboards) via SQLite WAL mode
 - Zero external Python dependencies; stdlib only
 - Database at `~/.claude/claude-status.db` (override with `CLAUDE_STATUS_DB` env var)
@@ -20,12 +20,12 @@ src/claude_status/
   db.py        # SQLite schema, connection (WAL), upsert/query helpers
   process.py   # ps parsing, lsof CWD lookup, tmux mapping, JSONL-based state detection
   scanner.py   # Session catalog scan (index + JSONL fallback), session ID resolution, runtime process info
-  daemon.py    # Hook event dispatch, throttled full-scan, poll_once debug tool, UDP notify
+  hooks.py     # Hook event dispatch, throttled full-scan, poll_once debug tool, UDP notify
   demo.py      # Demo mode: mock sessions cycling through states for testing consumers
   cli.py       # argparse CLI: list, show, poll, notify, demo, db
 ```
 
-Dependency flow: `cli -> daemon, demo -> scanner -> db, process`
+Dependency flow: `cli -> hooks, demo -> scanner -> db, process`
 
 ## Development Commands
 
@@ -50,7 +50,7 @@ Or use `uv run claude-status ...` which picks up edits automatically.
 - hatchling build backend with `src/` layout
 - No external dependencies; everything uses the Python standard library
 - Tests use `pytest` with temp SQLite databases; no mocking of system calls in unit tests
-- Test files mirror source: `test_db.py`, `test_process.py`, `test_scanner.py`, `test_daemon.py`
+- Test files mirror source: `test_db.py`, `test_process.py`, `test_scanner.py`, `test_hooks.py`
 
 ## Data Sources
 
@@ -66,7 +66,7 @@ than 1 second ago (throttled to avoid redundant subprocess calls during rapid to
 
 ## Key Design Decisions
 
-- Hooks are the sole source of state; no polling daemon
+- Hooks are the sole source of state; no background polling
 - JSONL files are only re-parsed when their mtime changes (stored in `jsonl_mtime` column)
 - `poll` command uses JSONL mtime heuristics for state detection (debug/bootstrap only)
 - `folder_label()` in `scanner.py` reconstructs filesystem paths from Claude's hyphenated

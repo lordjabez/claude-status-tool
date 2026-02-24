@@ -1,4 +1,4 @@
-# claude-status
+# Claude Status Tool
 
 Real-time status tracking for Claude Code sessions. Claude Code hooks push state transitions to a SQLite database as they happen, and a CLI provides quick queries. Other tools (dashboards, status bars, scripts) can read the database directly.
 

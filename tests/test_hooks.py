@@ -1,11 +1,10 @@
-"""Tests for claude_status.daemon hook-notify functionality."""
+"""Tests for claude_status.hooks hook-notify functionality."""
 
 import json
 import time
 from pathlib import Path
 from unittest.mock import patch
 
-from claude_status.daemon import _process_hook_event, handle_notify
 from claude_status.db import (
     get_connection,
     init_schema,
@@ -13,6 +12,7 @@ from claude_status.db import (
     upsert_runtime,
     upsert_session,
 )
+from claude_status.hooks import _process_hook_event, handle_notify
 
 
 def _make_db(tmp_path: Path, *, throttled: bool = True):
@@ -334,10 +334,10 @@ def test_scan_runs_when_throttle_expired(tmp_path):
     """Any event should trigger a full scan when the throttle has expired."""
     conn = _make_db(tmp_path, throttled=False)
 
-    with patch("claude_status.daemon.scan_sessions") as mock_scan_sess, \
-         patch("claude_status.daemon.scan_runtime",
+    with patch("claude_status.hooks.scan_sessions") as mock_scan_sess, \
+         patch("claude_status.hooks.scan_runtime",
                return_value=set()) as mock_scan_rt, \
-         patch("claude_status.daemon.remove_stale_runtime") as mock_stale:
+         patch("claude_status.hooks.remove_stale_runtime") as mock_stale:
         payload = {
             "hook_event_name": "PostToolUse",
             "session_id": "scan-test",
@@ -361,8 +361,8 @@ def test_scan_skipped_when_throttled(tmp_path):
     upsert_runtime(conn, {"session_id": "throttle-test", "state": "working"})
     conn.commit()
 
-    with patch("claude_status.daemon.scan_sessions") as mock_scan_sess, \
-         patch("claude_status.daemon.scan_runtime") as mock_scan_rt:
+    with patch("claude_status.hooks.scan_sessions") as mock_scan_sess, \
+         patch("claude_status.hooks.scan_runtime") as mock_scan_rt:
         payload = {
             "hook_event_name": "PostToolUse",
             "session_id": "throttle-test",

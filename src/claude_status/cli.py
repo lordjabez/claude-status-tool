@@ -7,7 +7,6 @@ import sys
 import time
 from datetime import datetime
 
-from claude_status.daemon import handle_notify, poll_once
 from claude_status.db import (
     get_active_sessions,
     get_all_sessions,
@@ -17,6 +16,7 @@ from claude_status.db import (
     init_schema,
 )
 from claude_status.demo import run_demo
+from claude_status.hooks import handle_notify, poll_once
 
 
 def format_ts(ts_str: str) -> str:

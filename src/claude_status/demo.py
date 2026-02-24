@@ -5,7 +5,6 @@ import signal
 import time
 import uuid
 
-from claude_status.daemon import _notify_udp
 from claude_status.db import (
     delete_runtime,
     get_connection,
@@ -13,6 +12,7 @@ from claude_status.db import (
     upsert_runtime,
     upsert_session,
 )
+from claude_status.hooks import _notify_udp
 
 _MOCK_SESSIONS = [
     {
