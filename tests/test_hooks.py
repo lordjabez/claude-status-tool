@@ -416,3 +416,37 @@ def test_scan_skipped_when_throttled(tmp_path):
     assert row["state"] == "working"
 
     conn.close()
+
+
+def test_session_start_inherits_title_from_same_cwd(tmp_path):
+    """After /clear, SessionStart should immediately inherit the title from
+    the most recent session with the same CWD, not wait for scan_runtime."""
+    conn = _make_db(tmp_path)
+
+    # Previous session in the same project directory, with a title
+    upsert_session(conn, {
+        "session_id": "old-sess",
+        "custom_title": "My Project",
+        "slug": "my-slug",
+        "cwd": "/projects/myapp",
+        "project_path": "/projects/myapp",
+        "project_dir": "-projects-myapp",
+        "modified_at": "2026-01-01T00:00:00Z",
+    })
+    conn.commit()
+
+    payload = {
+        "hook_event_name": "SessionStart",
+        "session_id": "new-sess",
+        "cwd": "/projects/myapp",
+    }
+    _process_hook_event(conn, payload)
+    conn.commit()
+
+    row = conn.execute(
+        "SELECT custom_title, project_path, project_dir FROM sessions WHERE session_id = 'new-sess'"
+    ).fetchone()
+    assert row["custom_title"] == "My Project"
+    assert row["project_path"] == "/projects/myapp"
+    assert row["project_dir"] == "-projects-myapp"
+    conn.close()

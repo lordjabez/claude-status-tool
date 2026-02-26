@@ -289,12 +289,22 @@ def scan_runtime(conn: sqlite3.Connection, detect_states: bool = True) -> set[st
     # scan_runtime runs.  After /clear or /compact, the process's --resume arg
     # still references the old session name, so _resolve_session_id would map the
     # PID to the wrong session.  Trusting the existing runtime mapping avoids this.
+    #
+    # However, after /clear the old runtime row may still hold a stale PID mapping.
+    # Detect this by checking if the session has any real metadata (slug or
+    # modified_at).  Sessions lacking both are post-/clear orphans whose PID
+    # should be re-resolved via _resolve_session_id and the CWD fallback.
     pid_map: dict[int, str] = {}
     runtime_session_ids: set[str] = set()
-    for row in conn.execute("SELECT session_id, pid FROM runtime"):
+    for row in conn.execute(
+        """SELECT r.session_id, r.pid, s.slug, s.modified_at
+           FROM runtime r
+           JOIN sessions s ON r.session_id = s.session_id"""
+    ):
         runtime_session_ids.add(row["session_id"])
         if row["pid"] is not None:
-            pid_map[row["pid"]] = row["session_id"]
+            if row["slug"] is not None or row["modified_at"] is not None:
+                pid_map[row["pid"]] = row["session_id"]
 
     tmux_map = get_tmux_pane_map()
     client_map = get_tmux_client_map()
@@ -343,6 +353,10 @@ def scan_runtime(conn: sqlite3.Connection, detect_states: bool = True) -> set[st
     # to unmatched processes by CWD.
     _match_pidless_runtime(conn, processes, matched_pids, active_session_ids,
                            tmux_map, client_map, detect_states)
+
+    # After /clear, the new session has no title/slug. If the runtime resume_arg
+    # points to a previous session that does have a title, inherit it.
+    _inherit_metadata(conn, active_session_ids)
 
     return active_session_ids
 
@@ -439,6 +453,48 @@ def _match_pidless_runtime(
             upsert_runtime(conn, process_data)
         else:
             update_runtime_process_info(conn, process_data)
+
+
+def _inherit_metadata(conn: sqlite3.Connection, active_session_ids: set[str]) -> None:
+    """Inherit metadata from the previous session after /clear.
+
+    After /clear, the new session has no title, slug, or first_prompt yet.
+    The runtime row's resume_arg still points to the previous session's UUID.
+    Copy useful metadata (custom_title, project_path, project_dir) from the
+    previous session so the new one displays correctly before it gets its own
+    JSONL entries.
+    """
+    if not active_session_ids:
+        return
+
+    placeholders = ", ".join(["?"] * len(active_session_ids))
+    rows = conn.execute(
+        f"""SELECT r.session_id, r.resume_arg, s.custom_title, s.slug
+            FROM runtime r
+            JOIN sessions s ON r.session_id = s.session_id
+            WHERE r.session_id IN ({placeholders})
+              AND s.custom_title IS NULL
+              AND s.slug IS NULL
+              AND r.resume_arg IS NOT NULL""",
+        list(active_session_ids),
+    ).fetchall()
+
+    for row in rows:
+        resume_arg = row["resume_arg"]
+        if not _looks_like_uuid(resume_arg):
+            continue
+        prev = conn.execute(
+            """SELECT custom_title, project_path, project_dir
+               FROM sessions WHERE session_id = ? AND custom_title IS NOT NULL""",
+            (resume_arg,),
+        ).fetchone()
+        if prev:
+            upsert_session(conn, {
+                "session_id": row["session_id"],
+                "custom_title": prev["custom_title"],
+                "project_path": prev["project_path"],
+                "project_dir": prev["project_dir"],
+            })
 
 
 def _resolve_session_id(conn: sqlite3.Connection, proc: dict) -> str | None:

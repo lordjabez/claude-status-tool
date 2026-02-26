@@ -254,6 +254,49 @@ def test_scan_runtime_matches_pidless_row_after_clear(tmp_path):
     conn.close()
 
 
+def test_inherit_title_after_clear(tmp_path):
+    """After /clear, the new session should inherit the title from the previous session
+    when resume_arg points to the old session's UUID."""
+    conn = _make_db(tmp_path)
+
+    # Old session with a title
+    upsert_session(conn, {
+        "session_id": "a7449d4e-64b9-47d9-be55-d6fdd174f7f3",
+        "custom_title": "CoS Daily",
+        "slug": "tidy-crafting-origami",
+        "modified_at": "2026-01-01T00:00:00Z",
+    })
+
+    # New session after /clear: no title, no slug, but has cwd from the hook event
+    upsert_session(conn, {
+        "session_id": "new-session-after-clear",
+        "cwd": "/projects/cos",
+        "modified_at": "2026-01-02T00:00:00Z",
+    })
+    upsert_runtime_state(conn, "new-session-after-clear", "idle")
+    conn.commit()
+
+    # Process with --resume pointing to the OLD session UUID
+    mock_processes = [{
+        "pid": 8888,
+        "tty": "ttys001",
+        "resume_arg": "a7449d4e-64b9-47d9-be55-d6fdd174f7f3",
+    }]
+
+    with patch("claude_status.scanner.get_claude_processes", return_value=mock_processes), \
+         patch("claude_status.scanner.get_tmux_pane_map", return_value={}), \
+         patch("claude_status.scanner.get_tmux_client_map", return_value={}), \
+         patch("claude_status.scanner.get_process_cwd", return_value="/projects/cos"):
+        scan_runtime(conn, detect_states=False)
+
+    conn.commit()
+    row = conn.execute(
+        "SELECT custom_title FROM sessions WHERE session_id = 'new-session-after-clear'"
+    ).fetchone()
+    assert row["custom_title"] == "CoS Daily"
+    conn.close()
+
+
 def test_scan_runtime_preserves_waiting_state(tmp_path):
     """Poll-based scan (detect_states=True) should not overwrite hook-set 'waiting'."""
     conn = _make_db(tmp_path)

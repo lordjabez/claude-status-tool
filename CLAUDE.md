@@ -76,7 +76,14 @@ than 1 second ago (throttled to avoid redundant subprocess calls during rapid to
 - `update_runtime_process_info()` updates pid/tty/tmux without touching state, preserving
   hook-set state values
 - After `/clear` or `/compact`, process `--resume` args become stale; `scan_runtime` uses
-  a PID map from existing runtime rows and a CWD fallback to match processes correctly
+  a PID map from existing runtime rows and a CWD fallback to match processes correctly;
+  orphan sessions (no slug, no modified_at) are excluded from `pid_map` so their stale
+  PID mappings don't prevent re-resolution
+- After `/clear`, title inheritance happens in two layers: (1) the `SessionStart` hook
+  handler immediately copies the title from the most recent session with the same CWD
+  via `_inherit_title_from_cwd()`, so the session is displayable without waiting for a
+  scan; (2) `_inherit_metadata()` in `scan_runtime` acts as a backup, propagating metadata
+  by following the `resume_arg` UUID stored in the runtime row
 - "Waiting" state is sticky: once set by a hook (PermissionRequest or
   Notification/elicitation_dialog/permission_prompt), neither Stop events nor poll-based
   JSONL detection may overwrite it with "idle". Only an explicit action event

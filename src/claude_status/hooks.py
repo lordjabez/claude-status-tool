@@ -51,6 +51,34 @@ def poll_once(db_path: Path | None = None) -> None:
         conn.close()
 
 
+def _inherit_title_from_cwd(
+    conn: sqlite3.Connection, session_id: str, cwd: str,
+) -> None:
+    """Copy custom_title from the most recent session sharing this CWD.
+
+    After /clear, the new session has no title, slug, or first_prompt.
+    Rather than waiting for scan_runtime to run _inherit_metadata (which
+    depends on resume_arg being populated), look up the previous session
+    by CWD and copy the title immediately so the session is displayable.
+    """
+    row = conn.execute(
+        """SELECT custom_title, project_path, project_dir
+           FROM sessions
+           WHERE (cwd = ? OR project_path = ?)
+             AND session_id != ?
+             AND custom_title IS NOT NULL
+           ORDER BY modified_at DESC LIMIT 1""",
+        (cwd, cwd, session_id),
+    ).fetchone()
+    if row:
+        upsert_session(conn, {
+            "session_id": session_id,
+            "custom_title": row["custom_title"],
+            "project_path": row["project_path"],
+            "project_dir": row["project_dir"],
+        })
+
+
 def _get_current_state(conn: sqlite3.Connection, session_id: str) -> str | None:
     """Return the current runtime state for a session, or None if no row exists."""
     row = conn.execute(
@@ -74,8 +102,14 @@ def _process_hook_event(conn: sqlite3.Connection, payload: dict) -> bool:
     prev_state = _get_current_state(conn, session_id)
 
     if event == "SessionStart":
-        upsert_session(conn, {"session_id": session_id, "cwd": payload.get("cwd")})
+        cwd = payload.get("cwd")
+        upsert_session(conn, {"session_id": session_id, "cwd": cwd})
         upsert_runtime_state(conn, session_id, "idle")
+        # After /clear, the new session has no title/slug yet. Copy the title
+        # from the most recent session in the same project directory so the
+        # session is immediately displayable (don't wait for scan_runtime).
+        if cwd:
+            _inherit_title_from_cwd(conn, session_id, cwd)
         changed = True  # New session always matters.
 
     elif event in ("UserPromptSubmit", "PreToolUse", "PostToolUse", "TaskCompleted"):
